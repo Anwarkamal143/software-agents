@@ -129,3 +129,17 @@ _Avoid_: quota, cap (alone), spend limit
 **Checkpoint**:
 A fixed moment when the Orchestrator evaluates Policies: before a Stage run, after a Stage result, at the Merge gate, and after a merge.
 _Avoid_: hook, trigger
+
+## Configuration
+
+**Factory home**:
+The folder on your machine that holds the Factory's configuration, Job store and artifacts. Target repos never contain Factory configuration.
+_Avoid_: workspace, project folder
+
+**Stage library**:
+The set of Stages defined once in Factory configuration, which Pipelines refer to by name.
+_Avoid_: stage registry, templates
+
+**Factory-wide value**:
+A setting that only the Factory layer may set, because it applies across all Target repos: the daily Budget, sign-in mode, Job store and Mirrors.
+_Avoid_: global (alone)
