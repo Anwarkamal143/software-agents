@@ -1,0 +1,76 @@
+# PROTOTYPE: throwaway draft of the Factory configuration (Shape of the Factory configuration file, #9).
+# This file lives in the Factory's home folder (~/.factory/factory.yaml), never in a Target repo.
+
+version: 1
+
+agent:                          # defaults for every Agent Stage
+  adapter: claude               # the only Agent adapter in v1
+  auth: api-key                 # api-key | subscription
+  model: claude-sonnet-5-5
+
+state:
+  store: sqlite                 # sqlite | postgres
+  mirrors: [github]
+
+sources:
+  - kind: github-issues
+    ready_label: factory:ready  # an issue with this label becomes a queued Job
+
+# Layer 1: Factory defaults. Only this layer may set factory-wide values (daily budget).
+policies:
+  autonomy: trial               # off | trial | auto
+  bounce_cap: 3
+  budgets:
+    stage_run: { usd: 5, turns: 100, minutes: 30 }   # hard
+    job:       { usd: 20 }                           # soft
+    daily:     { usd: 50 }                           # soft, factory-wide
+  size_cap: 400                 # changed lines, excluding lockfiles and generated files
+  post_merge_watch_minutes: 60
+  risk_rules:
+    - { name: auth,       paths: ["**/auth/**"] }
+    - { name: payments,   paths: ["**/billing/**", "**/payments/**"] }
+    - { name: migrations, paths: ["**/migrations/**"] }
+    - { name: secrets,    paths: ["**/.env*"], keywords: ["BEGIN PRIVATE KEY"] }
+    - { name: ci-config,  paths: [".github/workflows/**"] }
+
+# Stage library: define each Stage once, use it in many Pipelines.
+stages:
+  triage:     { kind: agent, instructions: factory:triage,          tools: read-only }
+  build:      { kind: agent, instructions: factory:build,           tools: write-branch, model: claude-opus-5-5 }
+  verify:     { kind: check, run: repo.verify }
+  docs-check: { kind: check, run: repo.docs_verify }
+  review:     { kind: agent, instructions: factory:review,          tools: read-only, on_fail: build }
+  security:   { kind: agent, instructions: factory:security-review, tools: read-only, on_fail: build }
+
+# Layer 3: Pipelines. Their policies may only tighten.
+pipelines:
+  feature: { stages: [triage, build, verify, review, security] }
+  bugfix:  { stages: [triage, build, verify, review] }
+  docs:
+    stages: [build, docs-check, review]
+    policies: { bounce_cap: 1, budgets: { stage_run: { usd: 2 } } }
+
+# Layer 2: Target repos. Owner-controlled, so a repo may loosen Factory defaults (except factory-wide values).
+repos:
+  - name: acme/web-app
+    path: ~/code/web-app
+    default_pipeline: feature
+    verify: ["pnpm lint", "pnpm typecheck", "pnpm test"]
+    docs_verify: ["pnpm docs:build"]
+    policies: { autonomy: auto }
+
+  - name: acme/payments-api
+    path: ~/code/payments-api
+    default_pipeline: feature
+    verify: ["go vet ./...", "go test ./..."]
+    policies:
+      autonomy: off
+      budgets: { job: { usd: 40 }, daily: { usd: 200 } }   # daily is factory-wide: rejected
+      risk_rules:
+        - { name: ledger, paths: ["internal/ledger/**"] }
+
+# Layer 4: issue labels. A label selects a Pipeline (pipeline:<name>) or applies a patch that may only tighten.
+label_overrides:
+  factory:human-merge:   { autonomy: off }
+  factory:small-budget:  { budgets: { job: { usd: 5 } } }
+  factory:autonomy-auto: { autonomy: auto }          # would loosen: always rejected
