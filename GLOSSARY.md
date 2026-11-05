@@ -1,0 +1,131 @@
+# Software Factory
+
+A configurable system that turns tracked work items into reviewed, merged pull requests with minimal human babysitting.
+
+## Language
+
+**Factory**:
+The whole system: its sources, pipeline, policies and executor, configured for one or more target repos.
+_Avoid_: board, platform, orchestrator (as a name for the whole)
+
+**Job**:
+One unit of work travelling through the Factory, from a tracked issue to a merged (or abandoned) pull request.
+_Avoid_: task, run, card, ticket
+
+**Source**:
+Where Jobs come from, such as GitHub Issues.
+_Avoid_: intake, inbox
+
+**Stage**:
+One step a Job passes through in the pipeline, such as build, QA or review.
+_Avoid_: lane, phase, step
+
+**Policy**:
+A configured rule that governs a Job's progress, such as a merge gate, an autonomy level or a budget.
+_Avoid_: rule
+
+**Target repo**:
+A repository the Factory does work in, with its own verify commands and conventions.
+_Avoid_: project, workspace
+
+**Orchestrator**:
+The Factory's own program that owns Job state, Stage order, Policies and every merge. Agents work inside it and never replace it.
+_Avoid_: runner, daemon, board
+
+**Agent adapter**:
+The single seam through which the Orchestrator runs one Stage on a particular agent (such as Claude Code or Codex) and gets back its events and result.
+_Avoid_: harness, driver, executor
+
+**Factory plugin**:
+The Stage instructions (prompts and skills) loaded into each agent session. It holds behaviour, never control logic.
+_Avoid_: skill pack, playbook
+
+**Guard**:
+A block the Orchestrator places on a single agent action, such as reading a secret file or writing outside the Job's working copy. A Guard stops a tool call; a Policy governs a Job's progress.
+_Avoid_: hook (for the concept), Policy
+
+## Job lifecycle
+
+**Job status**:
+Where a Job stands, independent of the pipeline: queued, running, waiting, paused, merged, failed or cancelled. A Job always has both a current Stage and a Job status.
+_Avoid_: state, column, phase
+
+**Stage run**:
+One agent session executing one Stage for one Job.
+_Avoid_: run, session (alone), execution
+
+**Attempt**:
+A fresh start of a Job from the default branch, on its own branch. A retry after failure or a reset begins a new Attempt.
+_Avoid_: retry (as a noun), iteration
+
+**Bounce**:
+Sending a Job back to an earlier Stage because a later Stage failed it, carrying that Stage's findings along.
+_Avoid_: rebuild, rework, rejection
+
+**Event log**:
+The append-only record of everything that happened to every Job, each entry with its cause. Job state is computed from it.
+_Avoid_: history, audit log, activity feed
+
+**Job store**:
+The single authoritative home of the Event log. Every transition is decided against it.
+_Avoid_: database, backend (alone), source of truth
+
+**Mirror**:
+A read-only copy of Job state kept for visibility, such as GitHub labels and status comments. It never decides anything.
+_Avoid_: replica, sync, projection (for GitHub)
+
+## Stages and pipelines
+
+**Pipeline**:
+A named, ordered list of Stages that a Job goes through, chosen by issue label or by the Target repo's default.
+_Avoid_: workflow, flow, lanes
+
+**Agent Stage**:
+A Stage carried out by an agent session following Factory plugin instructions.
+_Avoid_: lane, worker, agent step
+
+**Check Stage**:
+A Stage carried out by a deterministic command the Orchestrator runs itself, with no agent involved.
+_Avoid_: gate (for this), CI step
+
+**Stage brief**:
+Everything the Orchestrator hands a Stage run: the issue text marked as untrusted, the branch, the Attempt and Bounce numbers, earlier Stage results, the Target repo's conventions, and the Stage's instructions.
+_Avoid_: prompt, context, input
+
+**Stage result**:
+The structured outcome of a Stage run: a Verdict, a summary, findings, an optional question, and artifacts, alongside facts the Orchestrator measured itself.
+_Avoid_: output, report
+
+**Verdict**:
+A Stage's claim of pass, fail or needs-human. It decides where the Pipeline goes next and is never proof.
+_Avoid_: confidence, status
+
+**Evidence**:
+Proof the Orchestrator produced itself, tied to an exact head commit, such as Check Stage output. Only Evidence can satisfy a merge gate.
+_Avoid_: proof (from an agent), test claims
+
+**Tool profile**:
+What a Stage is allowed to do: read-only, or write to the Job's branch. Guards apply on top.
+_Avoid_: permissions (alone), mode
+
+## Policies
+
+**Autonomy level**:
+How far the Factory may go on its own in a Target repo: off (you merge), trial (you merge, and the Factory says whether it would have), or auto (the Factory merges when the Merge gate passes).
+_Avoid_: merge mode, confidence mode
+
+**Merge gate**:
+The Orchestrator's final check before merging. Its core requirements are fixed and cannot be configured; Policies can only add to them.
+_Avoid_: merge Stage, approval step
+
+**Risk rule**:
+A Policy that sends a Job to a human whatever the Autonomy level, matched by label, path, a keyword in added lines, or change size.
+_Avoid_: always-human, protected path (alone)
+
+**Budget**:
+A limit on estimated dollars, turns or wall-clock time for a Stage run, a Job or the whole Factory per day.
+_Avoid_: quota, cap (alone), spend limit
+
+**Checkpoint**:
+A fixed moment when the Orchestrator evaluates Policies: before a Stage run, after a Stage result, at the Merge gate, and after a merge.
+_Avoid_: hook, trigger
