@@ -16,6 +16,9 @@ export class EventLog {
   /** Appends `event`, or a `transition-rejected` in its place. Returns what was appended. */
   record(event: NewEvent): FactoryEvent {
     this.catchUp();
+    // Replaying an event already in the log has no effect, not even a rejection.
+    const stored = event.id ? this.store.get(event.id) : undefined;
+    if (stored) return stored;
     const rejected = this.projection.rejection(event);
     const appended = rejected
       ? this.store.append({

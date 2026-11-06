@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { homePaths } from "../home.js";
 
 /** Points at exact bytes: Evidence and events refer to large outputs this way (ADR 0009). */
 export interface ArtifactRef {
@@ -18,7 +19,7 @@ export class ArtifactStore {
   private readonly dir: string;
 
   constructor(home: string) {
-    this.dir = join(home, "artifacts");
+    this.dir = homePaths(home).artifacts;
   }
 
   put(bytes: string | Uint8Array): ArtifactRef {

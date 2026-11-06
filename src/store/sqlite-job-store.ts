@@ -92,6 +92,11 @@ class SqliteJobStore implements JobStore {
     return this.decode(this.byId.get(id) as unknown as Row, false)!;
   }
 
+  get(id: string): FactoryEvent | undefined {
+    const row = this.byId.get(id) as unknown as Row | undefined;
+    return (row && this.decode(row, true)) ?? undefined;
+  }
+
   read(fromSeq = 1, limit = Number.MAX_SAFE_INTEGER): FactoryEvent[] {
     const out: FactoryEvent[] = [];
     // Unknown types are skipped, so page through until `limit` known events are found.

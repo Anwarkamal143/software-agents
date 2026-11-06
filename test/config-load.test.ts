@@ -70,3 +70,15 @@ describe("loadConfig", () => {
     expect(r.ok ? [] : r.problems[0]).toMatch(/^YAML: /);
   });
 });
+
+describe("loadConfig: layer rules", () => {
+  test("the Factory layer can't switch Risk rules off; only a Target repo can", () => {
+    const r = loadConfig(fixture("minimal.yaml") + "policies: { risk_rules_off: [auth] }\n");
+    expect(r.ok ? [] : r.problems).toEqual(["policies.risk_rules_off: only a Target repo may switch Risk rules off."]);
+  });
+
+  test("a Postgres Job store is refused until it is built", () => {
+    const r = loadConfig(fixture("minimal.yaml") + 'state: { store: postgres, postgres_url: "${env:FACTORY_PG}" }\n');
+    expect(r.ok ? [] : r.problems).toEqual(["state.store: postgres isn't available yet; use sqlite."]);
+  });
+});

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { writeFileSync } from "node:fs";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ConfigHolder } from "../src/config/holder.js";
 import { fixture } from "./helpers/config.js";
@@ -43,5 +43,18 @@ describe("ConfigHolder", () => {
     writeFileSync(file, fixture("minimal.yaml"));
     const holder = ConfigHolder.open(file);
     expect(holder.refresh()).toEqual({ changed: false, problems: [] });
+  });
+
+  test("a config file that disappears while running is reported and the previous config stays", () => {
+    const file = join(tmpHome(), "factory.yaml");
+    writeFileSync(file, fixture("minimal.yaml"));
+    const holder = ConfigHolder.open(file);
+    const before = holder.current;
+
+    rmSync(file);
+    const result = holder.refresh();
+    expect(result.changed).toBe(false);
+    expect(result.problems).toEqual([expect.stringMatching(/^Can't read .*factory\.yaml: /)]);
+    expect(holder.current).toBe(before);
   });
 });

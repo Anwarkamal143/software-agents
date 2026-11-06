@@ -14,7 +14,7 @@ describe("Job projection", () => {
     expect(jobs.get(fixture.expected.job_id)).toMatchObject(fixture.expected);
   });
 
-  test("a plan-limit hit parks queued and running Jobs; its reset releases only those", () => {
+  test("a plan-limit hit parks queued Jobs and leaves running ones to finish; its reset releases only those", () => {
     const store = openSqliteJobStore(join(tmpHome(), "factory.db"));
     for (const f of [STATUS_FIXTURES.queued, STATUS_FIXTURES.running, STATUS_FIXTURES.waiting]) {
       for (const event of f.log) store.append(event);
@@ -23,7 +23,7 @@ describe("Job projection", () => {
     const during = computeJobs(store.read());
     expect([...during.values()].map((j) => [j.job_id, j.status, j.reason])).toEqual([
       ["job-q", "paused", "plan-limit"],
-      ["job-r", "paused", "plan-limit"],
+      ["job-r", "running", null],
       ["job-w", "waiting", "question"],
     ]);
 
@@ -31,7 +31,7 @@ describe("Job projection", () => {
     const after = computeJobs(store.read());
     expect([...after.values()].map((j) => [j.job_id, j.status, j.reason])).toEqual([
       ["job-q", "queued", null],
-      ["job-r", "queued", null],
+      ["job-r", "running", null],
       ["job-w", "waiting", "question"],
     ]);
   });

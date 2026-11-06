@@ -17,6 +17,8 @@ export interface JobStore {
    * the log is not written again; the stored original is returned instead.
    */
   append(event: NewEvent): FactoryEvent;
+  /** The stored event with this id, upgraded like `read`, if it exists and its type is known. */
+  get(id: string): FactoryEvent | undefined;
   /**
    * Events with `seq >= fromSeq`, in seq order, upgraded to their current
    * schema version. Event types this Factory doesn't know are skipped.

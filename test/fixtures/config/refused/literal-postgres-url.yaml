@@ -1,6 +1,6 @@
 version: 1
 humans: [alice]
-state: { store: postgres, postgres_url: "postgres://factory:hunter2@localhost/factory" }
+state: { postgres_url: "postgres://factory:hunter2@localhost/factory" }
 stages:
   build: { kind: agent, instructions: factory:build, tools: write-branch }
   verify: { kind: check, run: verify }

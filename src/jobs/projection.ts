@@ -3,8 +3,6 @@ import type { FactoryEvent, NewEvent } from "../events/envelope.js";
 /** Where a Job stands, independent of the Pipeline. Computed from events, never stored (ADR 0009). */
 export type JobStatus = "queued" | "running" | "waiting" | "paused" | "merged" | "failed" | "cancelled";
 
-export const TERMINAL: ReadonlySet<JobStatus> = new Set(["merged", "failed", "cancelled"]);
-
 export interface JobState {
   job_id: string;
   repo: string;
@@ -48,13 +46,18 @@ const MOVES: Record<string, Move> = {
   "human-requested": { from: LIVE, to: "waiting", reason: (d) => text(d.kind) },
   "human-answered": { from: ["waiting", "paused"], to: "queued" },
   "job-reapproval-needed": { from: LIVE, to: "waiting", reason: () => "reapproval" },
-  "budget-exceeded": { from: ["queued", "running"], to: "paused", reason: () => "budget" },
+  // Budgets are checked before a Stage run, and a hard hit ends the run first (stage-errored),
+  // so a running Stage run always finishes (ADR 0004).
+  "budget-exceeded": { from: ["queued"], to: "paused", reason: () => "budget" },
   "pr-merged": { from: LIVE, to: "merged" },
   "job-failed": { from: LIVE, to: "failed", reason: (d) => text(d.reason) },
   "job-cancelled": { from: LIVE, to: "cancelled", reason: (d) => text(d.reason) },
 };
 
-/** Factory-wide events that park every queued or running Job, and the event that releases them. */
+/**
+ * Factory-wide events that stop new Stage runs, and the event that releases them.
+ * Queued Jobs park at once; running ones finish their Stage run and park then (ADR 0004).
+ */
 const FACTORY_PAUSES: Record<string, { reason: string; releasedBy: string }> = {
   "plan-limit-hit": { reason: "plan-limit", releasedBy: "plan-limit-reset" },
   "factory-paused": { reason: "factory-paused", releasedBy: "factory-resumed" },
@@ -66,6 +69,8 @@ const FACTORY_PAUSES: Record<string, { reason: string; releasedBy: string }> = {
  */
 export class JobProjection {
   private readonly states = new Map<string, JobState>();
+  /** Reason of the Factory-wide pause in effect, if any. */
+  private factoryPause: string | null = null;
 
   apply(event: FactoryEvent): void {
     if (event.job_id === null) return this.applyFactoryWide(event);
@@ -88,12 +93,16 @@ export class JobProjection {
       return;
     }
     const job = this.states.get(event.job_id);
-    if (!job || rejection(job, event)) return;
+    if (!job || disallowedMove(job, event)) return;
 
     const move = MOVES[event.type];
     if (move) {
       job.status = move.to;
       job.reason = move.reason?.(event.data) ?? null;
+      if (job.status === "queued" && this.factoryPause) {
+        job.status = "paused";
+        job.reason = this.factoryPause;
+      }
     }
     if (event.type === "attempt-started") {
       job.attempt = event.attempt ?? job.attempt + 1;
@@ -123,14 +132,16 @@ export class JobProjection {
       return job ? { from_status: job.status, why: `Job ${event.job_id} already exists` } : null;
     }
     if (!job) return { from_status: "none", why: `no Job ${event.job_id} has been approved` };
-    return rejection(job, event);
+    return disallowedMove(job, event);
   }
 
   private applyFactoryWide(event: FactoryEvent): void {
     const pause = FACTORY_PAUSES[event.type];
     const release = Object.values(FACTORY_PAUSES).find((p) => p.releasedBy === event.type);
+    if (pause) this.factoryPause = pause.reason;
+    else if (release && this.factoryPause === release.reason) this.factoryPause = null;
     for (const job of this.states.values()) {
-      if (pause && (job.status === "queued" || job.status === "running")) {
+      if (pause && job.status === "queued") {
         job.status = "paused";
         job.reason = pause.reason;
       } else if (release && job.status === "paused" && job.reason === release.reason) {
@@ -143,7 +154,7 @@ export class JobProjection {
   }
 }
 
-function rejection(job: JobState, event: Pick<NewEvent, "type">): { from_status: string; why: string } | null {
+function disallowedMove(job: JobState, event: Pick<NewEvent, "type">): { from_status: string; why: string } | null {
   const move = MOVES[event.type];
   if (!move || move.from.includes(job.status)) return null;
   return { from_status: job.status, why: `${event.type} is not allowed while the Job is ${job.status}` };

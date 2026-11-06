@@ -44,4 +44,35 @@ describe("EventLog.record", () => {
     expect(recorded.type).toBe("stage-started");
     expect(log.job("job-q")).toMatchObject({ status: "running", stage: "build" });
   });
+
+  test("recording an event whose id is already in the log has no effect", () => {
+    const log = openLog();
+    const [approval] = STATUS_FIXTURES.queued.log;
+    const first = log.record({ ...approval!, id: "01JZ0000000000000000000009" });
+    const again = log.record({ ...approval!, id: "01JZ0000000000000000000009" });
+
+    expect(again).toEqual(first);
+    expect(log.store.read().map((e) => e.type)).toEqual(["job-approved"]);
+  });
+
+  test("a Stage run in flight when the Factory pauses still finishes, then the Job parks (ADR 0004)", () => {
+    const log = openLog();
+    for (const event of STATUS_FIXTURES.running.log) log.record(event);
+    log.record({ type: "plan-limit-hit", actor: "orchestrator" });
+    expect(log.job("job-r")).toMatchObject({ status: "running" });
+
+    const finished = log.record({ type: "stage-passed", job_id: "job-r", attempt: 1, actor: "orchestrator", data: { stage: "build" } });
+    expect(finished.type).toBe("stage-passed");
+    expect(log.job("job-r")).toMatchObject({ status: "paused", reason: "plan-limit", stage: "build" });
+
+    log.record({ type: "plan-limit-reset", actor: "orchestrator" });
+    expect(log.job("job-r")).toMatchObject({ status: "queued", reason: null });
+  });
+
+  test("a Budget is enforced between Stage runs, so a running Job can't be paused mid-run", () => {
+    const log = openLog();
+    for (const event of STATUS_FIXTURES.running.log) log.record(event);
+    const recorded = log.record({ type: "budget-exceeded", job_id: "job-r", attempt: 1, actor: "orchestrator", data: { budget: "daily" } });
+    expect(recorded.type).toBe("transition-rejected");
+  });
 });

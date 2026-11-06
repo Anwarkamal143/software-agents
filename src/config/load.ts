@@ -5,7 +5,7 @@ import { parseDocument } from "yaml";
 import { BUILT_IN_RISK_RULES, FACTORY_WIDE_POLICY_KEYS, flatten } from "./policies.js";
 import type { FactoryConfig } from "./types.js";
 
-export const CONFIG_SCHEMA = JSON.parse(
+const CONFIG_SCHEMA = JSON.parse(
   readFileSync(new URL("../../schema/factory.schema.json", import.meta.url), "utf8"),
 ) as object;
 
@@ -31,8 +31,11 @@ export function loadConfig(text: string): LoadResult {
   const problems = semanticProblems(config);
   const warnings = unrunnableChecks(config);
   if (problems.length) return { ok: false, problems, warnings };
-  return { ok: true, config, warnings, hash: createHash("sha256").update(text).digest("hex") };
+  return { ok: true, config, warnings, hash: hashConfigText(text) };
 }
+
+/** sha256 of the config text: what a Stage run records as the config it used. */
+export const hashConfigText = (text: string) => createHash("sha256").update(text).digest("hex");
 
 function formatSchemaError(e: ErrorObject): string {
   const where = e.instancePath ? e.instancePath.slice(1).replaceAll("/", ".") : "factory.yaml";
@@ -44,6 +47,13 @@ function formatSchemaError(e: ErrorObject): string {
 }
 
 const SECRET_REF = /^(\$\{env:[A-Za-z_][A-Za-z0-9_]*\}|keychain:[A-Za-z_][A-Za-z0-9_.-]*)$/;
+
+/** A lower layer setting a Factory-wide Policy value. */
+function factoryWideKeys(at: string, patch: object | undefined): string[] {
+  return Object.keys(flatten(patch))
+    .filter((key) => FACTORY_WIDE_POLICY_KEYS.has(key))
+    .map((key) => `${at} sets ${key}, which only Factory config may set.`);
+}
 
 function semanticProblems(config: FactoryConfig): string[] {
   const problems: string[] = [];
@@ -62,22 +72,16 @@ function semanticProblems(config: FactoryConfig): string[] {
     if (!ids.some((id) => config.stages[id]?.kind === "check")) {
       problems.push(`Pipeline "${name}" has no Check Stage, so the Merge gate can never pass (no Evidence).`);
     }
-    for (const key of Object.keys(flatten(pipeline.policies))) {
-      if (FACTORY_WIDE_POLICY_KEYS.has(key)) problems.push(`Pipeline "${name}" sets ${key}, which only Factory config may set.`);
-    }
+    problems.push(...factoryWideKeys(`Pipeline "${name}"`, pipeline.policies));
   }
 
   for (const [label, patch] of Object.entries(config.label_overrides)) {
     if (label.startsWith("pipeline:")) problems.push(`Label override "${label}": pipeline:<name> labels only choose a Pipeline.`);
-    for (const key of Object.keys(flatten(patch))) {
-      if (FACTORY_WIDE_POLICY_KEYS.has(key)) problems.push(`Label override "${label}" sets ${key}, which only Factory config may set.`);
-    }
+    problems.push(...factoryWideKeys(`Label override "${label}"`, patch));
   }
 
   const knownRules = new Set([...BUILT_IN_RISK_RULES, ...(config.policies.risk_rules ?? [])].map((r) => r.name));
-  for (const off of config.policies.risk_rules_off ?? []) {
-    if (!BUILT_IN_RISK_RULES.some((r) => r.name === off)) problems.push(`policies.risk_rules_off: no built-in Risk rule is named "${off}".`);
-  }
+  if (config.policies.risk_rules_off) problems.push(`policies.risk_rules_off: only a Target repo may switch Risk rules off.`);
 
   const seen = new Set<string>();
   for (const repo of config.repos) {
@@ -85,9 +89,7 @@ function semanticProblems(config: FactoryConfig): string[] {
     if (seen.has(repo.name)) problems.push(`${at} is listed twice.`);
     seen.add(repo.name);
     if (!config.pipelines[repo.default_pipeline]) problems.push(`${at}: default Pipeline "${repo.default_pipeline}" doesn't exist.`);
-    for (const key of Object.keys(flatten(repo.policies))) {
-      if (FACTORY_WIDE_POLICY_KEYS.has(key)) problems.push(`${at} sets ${key}, which only Factory config may set.`);
-    }
+    problems.push(...factoryWideKeys(at, repo.policies));
     if (repo.agent?.auth !== undefined) problems.push(`${at} sets agent.auth (sign-in mode), which only Factory config may set.`);
     if (repo.state !== undefined) problems.push(`${at} sets state (Job store and Mirrors), which only Factory config may set.`);
     for (const off of repo.policies?.risk_rules_off ?? []) {
@@ -108,7 +110,8 @@ function semanticProblems(config: FactoryConfig): string[] {
       problems.push(`${where} must be a reference like \${env:NAME} or keychain:NAME, never the secret itself.`);
     }
   }
-  if (config.state.store === "postgres" && !config.state.postgres_url) problems.push(`state.store is postgres but state.postgres_url isn't set.`);
+  // The Postgres Job store sits behind the same interface later (ADR 0002); refuse rather than silently use SQLite.
+  if (config.state.store === "postgres") problems.push(`state.store: postgres isn't available yet; use sqlite.`);
 
   return problems;
 }

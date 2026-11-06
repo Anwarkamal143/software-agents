@@ -59,7 +59,7 @@ const fmt = (v: unknown) => (Array.isArray(v) ? v.join(", ") : String(v));
  */
 export function resolve(config: FactoryConfig, job: JobInput): Resolution {
   const errors: string[] = [];
-  const empty = (why: string): Resolution => ({
+  const cannotStart = (why: string): Resolution => ({
     errors: [...errors, why],
     pipeline: null,
     pipelineSource: null,
@@ -72,13 +72,13 @@ export function resolve(config: FactoryConfig, job: JobInput): Resolution {
   });
 
   const repo = config.repos.find((r) => r.name === job.repo);
-  if (!repo) return empty(`${job.repo} isn't a Target repo in factory.yaml.`);
+  if (!repo) return cannotStart(`${job.repo} isn't a Target repo in factory.yaml.`);
 
   const pipeLabels = job.labels.filter((l) => l.startsWith("pipeline:"));
   if (pipeLabels.length > 1) errors.push(`Two Pipeline labels (${pipeLabels.join(", ")}). The Job can't start until one is removed.`);
   const pipelineName = pipeLabels[0]?.slice("pipeline:".length) ?? repo.default_pipeline;
   const pipeline = config.pipelines[pipelineName];
-  if (!pipeline) return empty(`Pipeline "${pipelineName}" doesn't exist.`);
+  if (!pipeline) return cannotStart(`Pipeline "${pipelineName}" doesn't exist.`);
 
   const layers: Layer[] = [
     { layer: "Built-in default", patch: { ...BUILT_IN_POLICIES, risk_rules: BUILT_IN_RISK_RULES }, mayLoosen: true, factoryLayer: true },
@@ -101,6 +101,11 @@ export function resolve(config: FactoryConfig, job: JobInput): Resolution {
         continue;
       }
       const stricter = AT_LEAST_AS_STRICT[key];
+      // Fail closed: a key with no tighten-only rule can't be set by a tighten-only layer.
+      if (!L.mayLoosen && !stricter) {
+        refused.push({ layer: L.layer, key, value, why: "has no tighten-only rule, so only Factory or Target repo config may set it" });
+        continue;
+      }
       if (key in flat && !L.mayLoosen && stricter && !stricter(flat[key], value)) {
         refused.push({ layer: L.layer, key, value, why: `would loosen ${fmt(flat[key])} → ${fmt(value)}` });
         continue;
@@ -108,8 +113,8 @@ export function resolve(config: FactoryConfig, job: JobInput): Resolution {
       flat[key] = value;
       source[key] = L.layer;
     }
-    // Risk rules add up; only owner layers may switch earlier ones off, by name.
-    if (L.mayLoosen && L.patch?.risk_rules_off) {
+    // Risk rules add up; only the Target repo layer may switch earlier ones off, by name.
+    if (L.layer === "Target repo" && L.patch?.risk_rules_off) {
       const off = new Set(L.patch.risk_rules_off);
       riskRules = riskRules.filter((r) => !off.has(r.name));
     }

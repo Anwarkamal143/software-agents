@@ -83,3 +83,24 @@ describe("resolve: the prototype's guided scenarios", () => {
     expect(resolve(draftConfig(), job("acme/web-app")).maxRunning).toBe(2);
   });
 });
+
+describe("resolve: tighten-only fails closed", () => {
+  test("a label setting a Policy key with no strictness rule is refused, not applied", () => {
+    const config = draftConfig();
+    // A key the schema doesn't know yet, as if added later without a strictness rule.
+    (config.label_overrides as Record<string, object>)["factory:odd"] = { new_knob: 1 };
+    (config.policies as Record<string, unknown>).new_knob = 5;
+    const r = resolve(config, job("acme/web-app", ["factory:odd"]));
+    expect(r.refused).toEqual([
+      { layer: "Label factory:odd", key: "new_knob", value: 1, why: "has no tighten-only rule, so only Factory or Target repo config may set it" },
+    ]);
+    expect((r.policies as unknown as Record<string, unknown>).new_knob).toBe(5);
+  });
+
+  test("only the Target repo layer switches Risk rules off", () => {
+    const config = draftConfig();
+    config.repos[0]!.policies = { ...config.repos[0]!.policies, risk_rules_off: ["payments"] };
+    const r = resolve(config, job("acme/web-app"));
+    expect(r.riskRules.map((x) => x.name)).toEqual(["auth", "migrations", "secrets", "ci-config"]);
+  });
+});
