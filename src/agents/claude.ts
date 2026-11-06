@@ -135,7 +135,7 @@ export class ClaudeAdapter implements AgentAdapter {
       return { kind: "error", reason: "crash", message, facts: facts({ duration_ms: Date.now() - started }), ...(session_id && { session_id }) };
     } finally {
       request.signal?.removeEventListener("abort", abort);
-      await transcript.close();
+      transcript.close();
     }
   }
 

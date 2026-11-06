@@ -1,6 +1,6 @@
 import picomatch from "picomatch";
 import { ulid } from "ulid";
-import type { AgentAdapter, AgentRunEvents, AgentRunOutcome, AgentRunRequest, MeasuredFacts, RateLimitInfo, RunErrorReason } from "../agents/adapter.js";
+import type { AgentAdapter, MeasuredFacts, RateLimitInfo, RunErrorReason, SessionResume } from "../agents/adapter.js";
 import type { ConfigHolder } from "../config/holder.js";
 import { resolve, type Resolution, type ResolvedStage } from "../config/resolve.js";
 import type { StageCondition } from "../config/types.js";
@@ -12,8 +12,7 @@ import { budgetAfterStageRun, budgetBeforeStageRun, spentToday, type BudgetHit }
 import type { Checkpoint } from "../policies/checkpoint.js";
 import type { PrePushChecks } from "../repos/prepush.js";
 import type { Clones, WorkingCopy } from "../repos/clones.js";
-import { issueHash } from "../source/github.js";
-import type { Source, SourceItem } from "../source/source.js";
+import { issueHash, SourceCredentialsRefused, type Source, type SourceItem } from "../source/source.js";
 import { renderBrief, renderHumanInput, type StageBrief } from "../stages/brief.js";
 import { parseReplyCommand } from "../humans/commands.js";
 import type { Notifier } from "../humans/notify.js";
@@ -23,7 +22,9 @@ import { SandboxUnavailable, type CheckRun, type CheckRunner } from "../stages/c
 import { parseStageResult, STAGE_RESULT_SCHEMA, type StageResult } from "../stages/result.js";
 import type { ArtifactStore } from "../store/artifact-store.js";
 import { attemptProgress, type AttemptProgress, type PendingAnswer } from "./progress.js";
+import { isLive, STAGE_RUN_ENDINGS } from "../jobs/endings.js";
 import { afterRunError, retryRun } from "./retries.js";
+import { MAX_GUARD_DENIALS, SessionWatch, type DenialTally, type RunEnvelope } from "./session-watch.js";
 
 export interface OrchestratorDeps {
   log: EventLog;
@@ -75,8 +76,6 @@ type StageOutcome =
   /** A Factory fault (ADR 0010): the run ends without a Verdict and the whole Factory pauses. */
   | { kind: "fault"; reason: "sandbox-unavailable" | "check-secret-missing" | "sign-in-mismatch"; message: string };
 
-/** Why the Orchestrator cut a session off. */
-type Cutoff = "idle" | "wall-clock" | "guard-denials" | "stopping";
 
 /** Everything one step of one Job is decided from. */
 interface StepContext {
@@ -105,8 +104,18 @@ export class Orchestrator {
   private polling: Promise<void> | null = null;
   /** Aborted once the Orchestrator must stop: every session is cut off and nothing new starts. */
   private readonly stopping = new AbortController();
+  private readonly sessions: SessionWatch;
 
-  constructor(private readonly deps: OrchestratorDeps) {}
+  constructor(private readonly deps: OrchestratorDeps) {
+    this.sessions = new SessionWatch({
+      agent: deps.agent,
+      record: (event) => this.record(event),
+      planLimitHit: (info, caused_by) => this.planLimitHit(info, caused_by),
+      stopping: this.stopping.signal,
+      ...(deps.limits && { limits: deps.limits }),
+      ...(deps.sleep && { sleep: deps.sleep }),
+    });
+  }
 
   /**
    * Polls the Source once, then keeps Jobs moving until none can without something new
@@ -177,7 +186,7 @@ export class Orchestrator {
     for (const job of this.deps.log.jobs().filter((j) => j.status === "running" || (j.status === "waiting" && j.reason === "reapproval"))) {
       const events = this.deps.log.eventsFor(job.job_id);
       const run = events.findLast((e) => e.type === "stage-started" || e.type === "stage-resumed");
-      if (!run || events.some((e) => e.stage_run_id === run.stage_run_id && RUN_ENDINGS.has(e.type))) continue;
+      if (!run || events.some((e) => e.stage_run_id === run.stage_run_id && STAGE_RUN_ENDINGS.has(e.type))) continue;
       const reported = events.findLast((e) => e.type === "session-started" && e.stage_run_id === run.stage_run_id)?.data.session_id;
       const session_id = reported ?? (run.type === "stage-resumed" ? run.data.session_id : undefined);
       await this.record({
@@ -238,7 +247,22 @@ export class Orchestrator {
 
   private async pollOnce(): Promise<void> {
     const store = this.deps.log.store;
-    const { items, cursor } = await this.deps.source.poll(store.cursor(SOURCE_CURSOR));
+    let polled: Awaited<ReturnType<Source["poll"]>>;
+    try {
+      polled = await this.deps.source.poll(store.cursor(SOURCE_CURSOR));
+    } catch (err) {
+      if (!(err instanceof SourceCredentialsRefused)) throw err;
+      // A Factory fault: no new Stage run starts until the credentials work again (ADR 0010).
+      if (this.deps.log.factoryPause()?.data.reason !== SOURCE_CREDENTIALS) {
+        await this.record({ type: "factory-paused", actor: "orchestrator", data: { reason: SOURCE_CREDENTIALS, message: err.message } });
+      }
+      return;
+    }
+    const pause = this.deps.log.factoryPause();
+    if (pause?.type === "factory-paused" && pause.data.reason === SOURCE_CREDENTIALS) {
+      await this.record({ type: "factory-resumed", actor: "orchestrator", caused_by: pause.id });
+    }
+    const { items, cursor } = polled;
     for (const item of items) await this.admit(item);
     try {
       store.saveCursor(SOURCE_CURSOR, cursor);
@@ -515,7 +539,7 @@ export class Orchestrator {
     return { ...pending, session_id: pending.session_id };
   }
 
-  private async runAgent(ctx: StepContext, stage: ResolvedStage, stage_run_id: string, run: RunEnvelope, resume: { session_id: string; input: string } | null): Promise<StageOutcome> {
+  private async runAgent(ctx: StepContext, stage: ResolvedStage, stage_run_id: string, run: RunEnvelope, resume: SessionResume | null): Promise<StageOutcome> {
     const { job, wc, progress } = ctx;
     const brief: StageBrief = {
       stage: stage.id,
@@ -543,13 +567,13 @@ export class Orchestrator {
       resultSchema: STAGE_RESULT_SCHEMA,
     };
     // Guard denials count across every session of this Stage run (ADR 0007).
-    const tally = { denials: 0 };
-    let watched = await this.withTransientRetries(run, resume ? { ...request, resume } : request, tally);
+    const tally: DenialTally = { denials: 0 };
+    let watched = await this.sessions.run(run, resume ? { ...request, resume } : request, tally);
     let resumeFailed: string | undefined;
     if (watched.outcome.kind === "resume-failed" && !watched.cutoff) {
       // The session can't be resumed: start a fresh one, which has the Q&A in its brief.
       resumeFailed = watched.outcome.message;
-      watched = await this.withTransientRetries(run, request, tally);
+      watched = await this.sessions.run(run, request, tally);
     }
     const { outcome, cutoff, rateLimited } = watched;
     const session_id = "session_id" in outcome ? outcome.session_id : undefined;
@@ -559,7 +583,7 @@ export class Orchestrator {
       return { kind: "interrupted", reason: "guard-denials", message: `${MAX_GUARD_DENIALS} Guard denials in one Stage run.`, ...(session_id && { session_id }) };
     }
     if (cutoff === "idle" || cutoff === "wall-clock") {
-      const limits = this.sessionLimits(request.budget);
+      const limits = this.sessions.limits(request.budget);
       const message = cutoff === "idle" ? `no message from the session for ${duration(limits.idleMs)}` : `the session ran past its ${duration(limits.wallClockMs)} wall-clock Budget`;
       return { kind: "error", reason: "timeout", message, facts, ...(session_id && { session_id }) };
     }
@@ -581,85 +605,6 @@ export class Orchestrator {
       ...(resumeFailed && { extra: { resume_failed: resumeFailed } }),
       ...(outcome.session_id && { session_id: outcome.session_id }),
     };
-  }
-
-  /** Transient errors are retried with backoff, about five minutes in all, without counting (ADR 0010). */
-  private async withTransientRetries(run: RunEnvelope, request: Omit<AgentRunRequest, "events" | "signal">, tally: { denials: number }): Promise<Watched> {
-    for (let i = 0; ; i++) {
-      const watched = await this.session(run, request, tally);
-      const { outcome } = watched;
-      const transient = outcome.kind === "error" && outcome.transient && !watched.cutoff && !watched.rateLimited;
-      if (!transient || i >= TRANSIENT_BACKOFF_MS.length || this.stopping.signal.aborted) return watched;
-      await (this.deps.sleep ?? sleep)(TRANSIENT_BACKOFF_MS[i]!);
-    }
-  }
-
-  private sessionLimits(budget: { minutes: number }) {
-    return { idleMs: this.deps.limits?.idleMs ?? IDLE_MS, wallClockMs: this.deps.limits?.wallClockMs ?? budget.minutes * 60_000 };
-  }
-
-  /**
-   * One agent session, watched by the Orchestrator's own timers (the SDK has none, ADR 0001):
-   * cut off at the wall-clock Budget, after too long with no message, at the third Guard
-   * denial, or when the Orchestrator stops. What the session reports is recorded in order.
-   */
-  private async session(run: RunEnvelope, request: Omit<AgentRunRequest, "events" | "signal">, tally: { denials: number }): Promise<Watched> {
-    const limits = this.sessionLimits(request.budget);
-    const controller = new AbortController();
-    let cutoff: Cutoff | null = null;
-    const cut = (why: Cutoff) => {
-      if (cutoff) return;
-      cutoff = why;
-      controller.abort(why);
-    };
-    let idle = setTimeout(() => cut("idle"), limits.idleMs);
-    const wall = setTimeout(() => cut("wall-clock"), limits.wallClockMs);
-    const onStop = () => cut("stopping");
-    this.stopping.signal.addEventListener("abort", onStop);
-    if (this.stopping.signal.aborted) onStop();
-
-    // Reports arrive synchronously; record them one after another, in the order they came.
-    let writes = Promise.resolve();
-    let writeError: unknown = null;
-    const later = (write: () => Promise<unknown>) => {
-      writes = writes.then(write).then(
-        () => undefined,
-        (err: unknown) => {
-          writeError ??= err;
-          cut("stopping");
-        },
-      );
-    };
-    let rateLimited = false;
-    const stage = String(request.brief.stage);
-    const events: AgentRunEvents = {
-      activity: () => {
-        clearTimeout(idle);
-        idle = setTimeout(() => cut("idle"), limits.idleMs);
-      },
-      session: (session_id) => later(() => this.record({ ...run, actor: "orchestrator", type: "session-started", data: { stage, session_id } })),
-      guardBlocked: (denial) => {
-        later(() => this.record({ ...run, actor: "orchestrator", type: "guard-blocked", data: { guard: denial.guard, tool: denial.tool, why: denial.why } }));
-        if (++tally.denials >= MAX_GUARD_DENIALS) cut("guard-denials");
-      },
-      rateLimit: (info) => {
-        if (info.status === "rejected") rateLimited = true;
-        if (info.status === "rejected" || (info.status === "allowed_warning" && (info.utilization ?? 0) >= PLAN_LIMIT_WARNING)) {
-          later(() => this.planLimitHit(info, run.caused_by));
-        }
-      },
-    };
-    try {
-      const outcome: AgentRunOutcome = await this.deps.agent.run({ ...request, events, signal: controller.signal });
-      return { outcome, cutoff, rateLimited };
-    } finally {
-      clearTimeout(idle);
-      clearTimeout(wall);
-      this.stopping.signal.removeEventListener("abort", onStop);
-      await writes;
-      // eslint-disable-next-line no-unsafe-finally
-      if (writeError) throw writeError;
-    }
   }
 
   /** A run cut off for something outside the Stage: not a Run error, so not counted. */
@@ -894,32 +839,15 @@ export class Orchestrator {
   }
 }
 
-type RunEnvelope = Pick<NewEvent, "job_id" | "attempt" | "stage_run_id" | "actor" | "caused_by">;
-
-/** How a Stage run ends: a run with none of these is unfinished. */
-const RUN_ENDINGS = new Set(["stage-passed", "stage-failed", "stage-needs-human", "stage-errored", "stage-interrupted", "prepush-failed"]);
+/** The `factory-paused` reason while the Source refuses the Factory's credentials. */
+const SOURCE_CREDENTIALS = "source-credentials";
 
 /** The Job store cursor the Source poll carries on from. */
 const SOURCE_CURSOR = "source";
 
-/** A session's outcome, and whether the Orchestrator cut it off or the plan limit did. */
-interface Watched {
-  outcome: AgentRunOutcome;
-  cutoff: Cutoff | null;
-  rateLimited: boolean;
-}
-
-const IDLE_MS = 10 * 60_000;
-/** Three tries over about five minutes (ADR 0010). */
-const TRANSIENT_BACKOFF_MS = [30_000, 90_000, 180_000];
-/** The third Guard denial in one Stage run ends it with a Human request (ADR 0007). */
-const MAX_GUARD_DENIALS = 3;
-/** Past this share of the plan's rate limit, no new Stage run starts. */
-const PLAN_LIMIT_WARNING = 0.9;
 /** When a plan limit gives no reset time, look again after an hour. */
 const PLAN_LIMIT_FALLBACK_MS = 60 * 60_000;
 
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const duration = (ms: number) => (ms >= 60_000 ? `${Math.round(ms / 60_000)} minutes` : `${ms}ms`);
 
 /** The envelope of an event the Orchestrator records about a Job's current Attempt. */
@@ -963,7 +891,6 @@ const instant = (run: () => Promise<unknown>): Plan => ({ kind: "instant", run: 
 /** One branch per Attempt of an issue: `factory/<issue>`, then `factory/<issue>-a2`, … (ADR 0002). */
 const attemptBranch = (issue: number, attempt: number) => (attempt > 1 ? `factory/${issue}-a${attempt}` : `factory/${issue}`);
 
-const isLive = (j: JobState) => !["merged", "failed", "cancelled"].includes(j.status);
 
 /** A `job-retried` no Attempt has started for yet. */
 function pendingRetry(events: FactoryEvent[]): FactoryEvent | null {

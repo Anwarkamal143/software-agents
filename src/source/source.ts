@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 /** Where Jobs come from. A Source only reads; everything written back goes through a Mirror. */
 
 export interface IssueText {
@@ -33,8 +35,21 @@ export interface IssueComment {
   created_at: string;
 }
 
+/**
+ * The Source refused the Factory's credentials (bad or revoked, an App uninstalled): a Factory
+ * fault, not something to retry (ADR 0010). The Factory pauses until a poll gets through again.
+ */
+export class SourceCredentialsRefused extends Error {
+  override name = "SourceCredentialsRefused";
+}
+
+/** The hash an approval is of: the issue's title and body as approved. Edits are compared by it. */
+export function issueHash(issue: Pick<IssueText, "title" | "body">): string {
+  return createHash("sha256").update(`${issue.title}\0${issue.body}`).digest("hex");
+}
+
 export interface Source {
-  /** Items since `cursor`, and the cursor to pass next time. */
+  /** Items since `cursor`, and the cursor to pass next time. Throws SourceCredentialsRefused for a Factory fault. */
   poll(cursor: string | null): Promise<{ items: SourceItem[]; cursor: string | null }>;
   /** Whether `login` has write access to `repo` right now. */
   hasWriteAccess(repo: string, login: string): Promise<boolean>;

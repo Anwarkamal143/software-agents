@@ -52,7 +52,7 @@ export class Transcript {
     appendFileSync(this.fd, `${line}\n`);
   }
 
-  async close(): Promise<void> {
+  close(): void {
     closeSync(this.fd);
   }
 }

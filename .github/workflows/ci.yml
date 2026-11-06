@@ -44,6 +44,6 @@ jobs:
         env:
           LIVE_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          if [ -z "$LIVE_KEY" ]; then echo "No ANTHROPIC_API_KEY secret: skipping the live security suite."; exit 0; fi
+          if [ -z "$LIVE_KEY" ]; then echo "::warning title=Security suite skipped::No ANTHROPIC_API_KEY secret, so the live hostile-fixture suite (including the Linux fail-closed SDK case) did not run."; exit 0; fi
           ANTHROPIC_API_KEY="$LIVE_KEY" FACTORY_LIVE_SDK=1 npx vitest run test/sdk-isolation.live.test.ts
       - run: npm run build

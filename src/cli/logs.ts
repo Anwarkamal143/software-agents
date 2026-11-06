@@ -1,10 +1,10 @@
 import { existsSync, readFileSync } from "node:fs";
 import { Transcripts } from "../agents/transcript.js";
 import type { FactoryEvent } from "../events/envelope.js";
+import { STAGE_RUN_ENDINGS } from "../jobs/endings.js";
 import type { JobStore } from "../store/job-store.js";
 
 const STARTS = new Set(["stage-started", "stage-resumed"]);
-const ENDS = new Set(["stage-passed", "stage-failed", "stage-needs-human", "stage-errored", "stage-interrupted", "prepush-failed"]);
 
 /**
  * `factory logs <job>`: one Job's events, each Stage run's Transcript under the event that
@@ -31,7 +31,7 @@ export async function printLogs(store: JobStore, home: string, job_id: string, w
   const show = (e: FactoryEvent) => {
     if (e.job_id !== job_id) return;
     const run = e.stage_run_id;
-    if (run && ENDS.has(e.type) && tails.has(run)) {
+    if (run && STAGE_RUN_ENDINGS.has(e.type) && tails.has(run)) {
       drain(run);
       tails.delete(run);
     }

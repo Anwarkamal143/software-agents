@@ -1,3 +1,4 @@
+import { SourceCredentialsRefused } from "../source/source.js";
 import type { GitHubAuth } from "./auth.js";
 
 export type Fetch = (url: string, init: { method: string; headers: Record<string, string>; body?: string }) => Promise<Response>;
@@ -15,7 +16,7 @@ export class GitHubUnavailable extends Error {
 }
 
 /** GitHub refused the Factory's credentials: a Factory fault, not something to retry (ADR 0010). */
-export class GitHubAuthError extends Error {
+export class GitHubAuthError extends SourceCredentialsRefused {
   override name = "GitHubAuthError";
 }
 

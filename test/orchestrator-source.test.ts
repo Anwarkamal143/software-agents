@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import type { AgentRunRequest } from "../src/agents/adapter.js";
-import { issueHash } from "../src/source/github.js";
+import { issueHash, SourceCredentialsRefused } from "../src/source/source.js";
 import type { SourceItem } from "../src/source/source.js";
 import { approved, comment } from "./fakes/source.js";
 import { building, ScriptedAgent } from "./fakes/agent.js";
@@ -113,5 +113,38 @@ describe("Orchestrator: what the Source reports", () => {
     again.source.poll = async (cursor) => (seen.push(cursor), poll(cursor));
     await again.orchestrator.runUntilIdle();
     expect(seen).toEqual(["2"]);
+  });
+});
+
+describe("Orchestrator: when GitHub refuses the Factory's credentials", () => {
+  test("the Factory pauses with the reason, and resumes once a poll gets through", async () => {
+    const f = fakeFactory(new ScriptedAgent({ build: [building] }));
+    const poll = f.source.poll.bind(f.source);
+    let refused = true;
+    f.source.poll = async (cursor) => {
+      if (refused) throw new SourceCredentialsRefused("GitHub refused the Factory's credentials (GET /repos/acme/web-app/issues).");
+      return poll(cursor);
+    };
+
+    await f.orchestrator.runUntilIdle();
+    await f.orchestrator.runUntilIdle();
+
+    const paused = f.log.store.read().filter((e) => e.type === "factory-paused");
+    expect(paused).toHaveLength(1);
+    expect(paused[0]!.data).toEqual({ reason: "source-credentials", message: "GitHub refused the Factory's credentials (GET /repos/acme/web-app/issues)." });
+    expect(f.log.factoryPause()?.type).toBe("factory-paused");
+
+    refused = false;
+    f.source.push(approved(7));
+    await f.orchestrator.runUntilIdle();
+    expect(f.log.store.read().some((e) => e.type === "factory-resumed")).toBe(true);
+    expect(f.log.store.read().at(-1)).toMatchObject({ type: "checkpoint-evaluated" });
+  });
+
+  test("a later good poll doesn't lift a pause for some other Factory fault", async () => {
+    const f = fakeFactory();
+    f.log.record({ type: "factory-paused", actor: "orchestrator", data: { reason: "sandbox-unavailable", message: "bubblewrap is not installed" } });
+    await f.orchestrator.runUntilIdle();
+    expect(f.log.store.read().some((e) => e.type === "factory-resumed")).toBe(false);
   });
 });

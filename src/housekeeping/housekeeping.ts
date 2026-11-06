@@ -2,6 +2,7 @@ import { existsSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { FactoryEvent } from "../events/envelope.js";
 import { homePaths } from "../home.js";
+import { isEnded, JOB_ENDINGS } from "../jobs/endings.js";
 import type { EventLog } from "../jobs/event-log.js";
 import type { JobState } from "../jobs/projection.js";
 import type { ArtifactStore } from "../store/artifact-store.js";
@@ -29,7 +30,6 @@ const ORPHAN_GRACE_MS = DAY_MS;
 
 const SHA256 = /^[0-9a-f]{64}$/;
 
-const ENDINGS = new Set(["job-failed", "job-cancelled", "pr-merged"]);
 
 /**
  * One housekeeping sweep (ADR 0010), at startup and hourly: Working copies of failed Jobs past
@@ -42,8 +42,8 @@ export async function housekeep({ home, log, artifacts, branches, now = () => ne
   const events = log.store.read();
   const jobs = new Map(log.jobs().map((j) => [j.job_id, j]));
   const endedAt = new Map<string, number>();
-  for (const e of events) if (e.job_id && ENDINGS.has(e.type)) endedAt.set(e.job_id, Date.parse(e.at));
-  const ended = (job: JobState | undefined) => job !== undefined && (job.status === "merged" || job.status === "failed" || job.status === "cancelled");
+  for (const e of events) if (e.job_id && JOB_ENDINGS.has(e.type)) endedAt.set(e.job_id, Date.parse(e.at));
+  const ended = (job: JobState | undefined) => job !== undefined && isEnded(job);
   const age = (job_id: string) => at - (endedAt.get(job_id) ?? at);
 
   /** Working copies: a failed Job's for 7 days; a merged or cancelled Job's, or no Job's, at once. */
@@ -143,7 +143,7 @@ async function deleteBranches(events: FactoryEvent[], jobs: Map<string, JobState
   for (const e of events) {
     if (e.type !== "attempt-started" || !e.job_id) continue;
     const job = jobs.get(e.job_id);
-    if (!job || !["merged", "cancelled", "failed"].includes(job.status) || !due(job)) continue;
+    if (!job || !isEnded(job) || !due(job)) continue;
     const branch = String(e.data.branch);
     if (done.has(`${job.job_id}\0${branch}`)) continue;
     wanted.set(job.repo, [...(wanted.get(job.repo) ?? []), { repo: job.repo, job_id: job.job_id, branch }]);

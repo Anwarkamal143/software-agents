@@ -1,4 +1,5 @@
 import type { FactoryEvent, NewEvent } from "../events/envelope.js";
+import { STAGE_RUN_ENDINGS } from "./endings.js";
 
 /** Where a Job stands, independent of the Pipeline. Computed from events, never stored (ADR 0009). */
 export type JobStatus = "queued" | "running" | "waiting" | "paused" | "merged" | "failed" | "cancelled";
@@ -176,15 +177,12 @@ export class JobProjection {
   }
 }
 
-/** How a Stage run already going ends; while a Job waits for re-approval its result is held (ADR 0007). */
-const HELD_ENDINGS = new Set(["stage-passed", "stage-failed", "stage-needs-human", "stage-errored", "stage-interrupted", "prepush-failed"]);
-
 /**
  * A Stage run that was going when the issue was edited by someone not allowed ends while the
  * Job waits for re-approval: its ending is recorded, but the Job stays waiting.
  */
 function held(job: JobState, event: Pick<NewEvent, "type">): boolean {
-  return job.status === "waiting" && job.reason === "reapproval" && HELD_ENDINGS.has(event.type);
+  return job.status === "waiting" && job.reason === "reapproval" && STAGE_RUN_ENDINGS.has(event.type);
 }
 
 function disallowedMove(job: JobState, event: Pick<NewEvent, "type">): { from_status: string; why: string } | null {

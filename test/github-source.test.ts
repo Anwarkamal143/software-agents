@@ -2,7 +2,8 @@ import { describe, expect, test } from "vitest";
 import { createVerify, generateKeyPairSync } from "node:crypto";
 import { AppAuth, TokenAuth } from "../src/github/auth.js";
 import { GitHubClient } from "../src/github/client.js";
-import { GitHubSource, issueHash } from "../src/source/github.js";
+import { GitHubSource } from "../src/source/github.js";
+import { issueHash } from "../src/source/source.js";
 import { FakeGitHub, recorded } from "./fakes/github.js";
 
 const REPO = "acme/web-app";

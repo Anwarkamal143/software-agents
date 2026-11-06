@@ -32,11 +32,17 @@ export interface AgentRunRequest {
    * Resume this earlier agent session instead of starting one, sending `input` (a human's
    * answer, marked as human input) as its next turn. The brief still describes the Stage.
    */
-  resume?: { session_id: string; input: string };
+  resume?: SessionResume;
   /** What the session reports while it runs, as it happens. */
   events: AgentRunEvents;
   /** The Orchestrator's own timers and stops: the session ends soon after this aborts. */
   signal?: AbortSignal;
+}
+
+/** An agent session to carry on, and the turn it carries on with. */
+export interface SessionResume {
+  session_id: string;
+  input: string;
 }
 
 /** Things a running session reports to the Orchestrator, which decides what they mean. */
@@ -51,9 +57,11 @@ export interface AgentRunEvents {
   rateLimit(info: RateLimitInfo): void;
 }
 
+/** The Guards (ADR 0007). */
+export type GuardName = "secret-file" | "outside-working-copy" | "destructive-command";
+
 export interface GuardDenial {
-  /** Which Guard: `secret-file`, `outside-working-copy` or `destructive-command`. */
-  guard: string;
+  guard: GuardName;
   tool: string;
   why: string;
 }

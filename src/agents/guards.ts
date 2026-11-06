@@ -1,6 +1,6 @@
 import { existsSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
-import type { GuardDenial } from "./adapter.js";
+import type { GuardDenial, GuardName } from "./adapter.js";
 
 /** Where one Stage run may work, and what it must never reach. */
 export interface GuardContext {
@@ -17,7 +17,7 @@ export interface GuardContext {
  * second wall, and every denial is recorded. Returns null when the call may go ahead.
  */
 export function checkToolCall(tool: string, input: Record<string, unknown>, ctx: GuardContext): GuardDenial | null {
-  const deny = (guard: string, why: string): GuardDenial => ({ guard, tool, why });
+  const deny = (guard: GuardName, why: string): GuardDenial => ({ guard, tool, why });
   if (tool === "Bash") {
     const command = typeof input.command === "string" ? input.command : "";
     const found = checkCommand(command, ctx);
@@ -60,7 +60,7 @@ const DESTRUCTIVE: { test: (segment: string, line: string) => boolean; why: stri
   { test: (_s, line) => /:\(\)\s*\{.*:\|:.*\}/.test(line), why: "a fork bomb" },
 ];
 
-function checkCommand(command: string, ctx: GuardContext): { guard: string; why: string } | null {
+function checkCommand(command: string, ctx: GuardContext): { guard: GuardName; why: string } | null {
   if (SECRET_IN_COMMAND.test(command)) return { guard: "secret-file", why: "the command reads a .env file" };
   if (HOME_CREDENTIALS.test(command) || command.includes(ctx.factoryHome) || (ctx.userHome && new RegExp(`${escape(ctx.userHome)}/${CREDENTIALS}`).test(command))) {
     return { guard: "secret-file", why: "the command reaches a credential folder or the Factory home" };

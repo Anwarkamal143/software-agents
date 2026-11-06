@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { GitHubAuthError, GitHubUnavailable, nextLink, type GitHubClient } from "../github/client.js";
-import type { IssueText, Source, SourceItem } from "./source.js";
+import { issueHash, type IssueText, type Source, type SourceItem } from "./source.js";
 
 export interface GitHubSourceConfig {
   /** `owner/repo` of every Target repo. */
@@ -183,11 +183,6 @@ export class GitHubSource implements Source {
   private now(): number {
     return (this.options.now?.() ?? new Date()).getTime();
   }
-}
-
-/** The hash an approval is of: the issue's title and body as approved. */
-export function issueHash(issue: Pick<IssueText, "title" | "body">): string {
-  return sha(`${issue.title}\0${issue.body}`);
 }
 
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");

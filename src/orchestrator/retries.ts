@@ -1,4 +1,6 @@
+import type { SessionResume } from "../agents/adapter.js";
 import type { FactoryEvent } from "../events/envelope.js";
+import { BROKEN_ENDINGS, STAGE_RUN_ENDINGS } from "../jobs/endings.js";
 
 /**
  * Run error retries (ADR 0010), read from one Attempt's events alone, so a restarted
@@ -6,18 +8,19 @@ import type { FactoryEvent } from "../events/envelope.js";
  */
 export const MAX_RETRIES = 2;
 
-/** Human requests a Run error sends a Job to; `/approve` on one gives the Stage one more try. */
-export const RETRY_ASKS = new Set(["retries-exhausted", "repeated-run-error"]);
+/** Why a Run error went to a human; `/approve` on such a request gives the Stage one more try. */
+export type RetryCause = "retries-exhausted" | "repeated-run-error";
+const RETRY_CAUSES: ReadonlySet<string> = new Set<RetryCause>(["retries-exhausted", "repeated-run-error"]);
 
 export interface RetryAsk {
-  cause: "retries-exhausted" | "repeated-run-error";
+  cause: RetryCause;
   text: string;
 }
 
 /** How the next run of a Stage starts after its last run broke. */
 export type RetryRun =
   /** Resume the broken session with `input` as its next turn. */
-  | { kind: "resume"; session_id: string; input: string; retry_of: string }
+  | (SessionResume & { kind: "resume"; retry_of: string })
   | { kind: "fresh"; retry_of: string };
 
 /** Reasons whose session is resumed once before the Stage starts fresh. */
@@ -52,8 +55,8 @@ export function retryRun(events: FactoryEvent[], stage: string): RetryRun | null
   const runs = events.filter((e) => (e.type === "stage-started" || e.type === "stage-resumed") && e.data.stage === stage);
   const lastRun = runs.at(-1);
   if (!lastRun) return null;
-  const ending = events.find((e) => e.stage_run_id === lastRun.stage_run_id && (ENDINGS.has(e.type) || BROKEN.has(e.type)));
-  if (!ending || !BROKEN.has(ending.type)) return null;
+  const ending = events.find((e) => e.stage_run_id === lastRun.stage_run_id && STAGE_RUN_ENDINGS.has(e.type));
+  if (!ending || !BROKEN_ENDINGS.has(ending.type)) return null;
   const fresh: RetryRun = { kind: "fresh", retry_of: ending.id };
   const session_id = typeof ending.data.session_id === "string" ? ending.data.session_id : null;
   // A Factory fault, plan limit or Guard denials ended the run: it starts over once released.
@@ -72,8 +75,6 @@ export function retryRun(events: FactoryEvent[], stage: string): RetryRun | null
   return fresh;
 }
 
-const ENDINGS = new Set(["stage-passed", "stage-failed", "stage-needs-human", "prepush-failed"]);
-const BROKEN = new Set(["stage-errored", "stage-interrupted"]);
 
 /**
  * The Stage's counted Run errors: since the latest `/approve` of a retry request for it, if
@@ -84,7 +85,7 @@ function runErrorsCounted(events: FactoryEvent[], stage: string): { errors: Fact
   const approvedAt = events.findLastIndex((e) => {
     if (e.type !== "human-answered" || e.data.command !== "approve") return false;
     const request = byId.get(String(e.data.request));
-    return request !== undefined && RETRY_ASKS.has(String(request.data.cause)) && request.data.stage === stage;
+    return request !== undefined && RETRY_CAUSES.has(String(request.data.cause)) && request.data.stage === stage;
   });
   const errors = events.slice(approvedAt + 1).filter((e) => e.type === "stage-errored" && e.data.stage === stage && e.data.reason !== "budget");
   return { errors, approvedOneMore: approvedAt !== -1 };
