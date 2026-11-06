@@ -1,4 +1,5 @@
 import type { FactoryEvent, NewEvent } from "../events/envelope.js";
+import { STAGE_RUN_ENDINGS } from "./endings.js";
 
 /** Where a Job stands, independent of the Pipeline. Computed from events, never stored (ADR 0009). */
 export type JobStatus = "queued" | "running" | "waiting" | "paused" | "merged" | "failed" | "cancelled";
@@ -37,6 +38,8 @@ const LIVE: readonly JobStatus[] = ["queued", "running", "waiting", "paused"];
 /** Every event type that moves a Job's status, and where from. Anything else leaves status alone. */
 const MOVES: Record<string, Move> = {
   "attempt-started": { from: ["queued", "failed"], to: "queued" },
+  // Only a human starts a new Attempt (ADR 0010).
+  "job-retried": { from: ["failed", "cancelled"], to: "queued" },
   "stage-started": { from: ["queued"], to: "running" },
   "stage-resumed": { from: ["queued"], to: "running" },
   "stage-passed": { from: ["running"], to: "queued" },
@@ -75,6 +78,8 @@ export class JobProjection {
   private readonly states = new Map<string, JobState>();
   /** Reason of the Factory-wide pause in effect, if any. */
   private factoryPause: string | null = null;
+  /** The event that started it. */
+  private factoryPauseEvent: FactoryEvent | null = null;
 
   apply(event: FactoryEvent): void {
     if (event.job_id === null) return this.applyFactoryWide(event);
@@ -100,7 +105,7 @@ export class JobProjection {
     const job = this.states.get(event.job_id);
     if (!job || disallowedMove(job, event)) return;
 
-    const move = MOVES[event.type];
+    const move = held(job, event) ? undefined : MOVES[event.type];
     if (move) {
       const was = job.status;
       job.resumed = move.to === "queued" && (was === "waiting" || was === "paused" || (job.resumed && was === "queued"));
@@ -120,6 +125,11 @@ export class JobProjection {
     if (typeof event.data.cost_usd === "number") job.cost_usd += event.data.cost_usd;
     job.last_seq = event.seq;
     job.updated_at = event.at;
+  }
+
+  /** The `plan-limit-hit` or `factory-paused` event in effect, or null when the Factory isn't paused. */
+  pause(): FactoryEvent | null {
+    return this.factoryPauseEvent;
   }
 
   get(job_id: string): JobState | undefined {
@@ -145,8 +155,13 @@ export class JobProjection {
   private applyFactoryWide(event: FactoryEvent): void {
     const pause = FACTORY_PAUSES[event.type];
     const release = Object.values(FACTORY_PAUSES).find((p) => p.releasedBy === event.type);
-    if (pause) this.factoryPause = pause.reason;
-    else if (release && this.factoryPause === release.reason) this.factoryPause = null;
+    if (pause) {
+      this.factoryPause = pause.reason;
+      this.factoryPauseEvent = event;
+    } else if (release && this.factoryPause === release.reason) {
+      this.factoryPause = null;
+      this.factoryPauseEvent = null;
+    }
     for (const job of this.states.values()) {
       if (pause && job.status === "queued") {
         job.status = "paused";
@@ -162,7 +177,16 @@ export class JobProjection {
   }
 }
 
+/**
+ * A Stage run that was going when the issue was edited by someone not allowed ends while the
+ * Job waits for re-approval: its ending is recorded, but the Job stays waiting.
+ */
+function held(job: JobState, event: Pick<NewEvent, "type">): boolean {
+  return job.status === "waiting" && job.reason === "reapproval" && STAGE_RUN_ENDINGS.has(event.type);
+}
+
 function disallowedMove(job: JobState, event: Pick<NewEvent, "type">): { from_status: string; why: string } | null {
+  if (held(job, event)) return null;
   const move = MOVES[event.type];
   if (!move || move.from.includes(job.status)) return null;
   return { from_status: job.status, why: `${event.type} is not allowed while the Job is ${job.status}` };

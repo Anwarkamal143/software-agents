@@ -57,6 +57,8 @@ class SqliteJobStore implements JobStore {
         data           TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS events_job ON events (job_id, seq);
+      -- Read cursors kept beside the Event log, such as where the Source poll got to. Not events: they decide nothing.
+      CREATE TABLE IF NOT EXISTS cursors (name TEXT PRIMARY KEY, value TEXT NOT NULL);
       -- The Event log is append-only: events are never rewritten (ADR 0009).
       CREATE TRIGGER IF NOT EXISTS events_no_update BEFORE UPDATE ON events
         BEGIN SELECT RAISE(ABORT, 'the Event log is append-only'); END;
@@ -128,6 +130,16 @@ class SqliteJobStore implements JobStore {
         await this.waitForAppend(pollMs, signal);
       }
     }
+  }
+
+  cursor(name: string): string | null {
+    const row = this.db.prepare("SELECT value FROM cursors WHERE name = ?").get(name) as { value: string } | undefined;
+    return row?.value ?? null;
+  }
+
+  saveCursor(name: string, value: string | null): void {
+    if (value === null) this.db.prepare("DELETE FROM cursors WHERE name = ?").run(name);
+    else this.db.prepare("INSERT INTO cursors (name, value) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET value = excluded.value").run(name, value);
   }
 
   transaction<T>(fn: () => T): T {

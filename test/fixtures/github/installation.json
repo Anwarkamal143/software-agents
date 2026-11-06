@@ -1,0 +1,13 @@
+{
+  "id": 4242,
+  "account": { "login": "acme", "id": 1, "type": "Organization" },
+  "repository_selection": "selected",
+  "access_tokens_url": "https://api.github.com/app/installations/4242/access_tokens",
+  "app_id": 1001,
+  "app_slug": "my-software-factory",
+  "target_type": "Organization",
+  "permissions": { "contents": "write", "issues": "write", "pull_requests": "write", "checks": "read", "metadata": "read" },
+  "events": [],
+  "created_at": "2026-10-01T00:00:00Z",
+  "updated_at": "2026-10-01T00:00:00Z"
+}

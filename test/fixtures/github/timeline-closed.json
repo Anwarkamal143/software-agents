@@ -1,0 +1,12 @@
+{
+  "id": 6430300001,
+  "node_id": "CE_lADODwFebM5OpCHZzwAAAAF_RqZh",
+  "url": "https://api.github.com/repos/acme/web-app/issues/events/6430300001",
+  "actor": { "login": "alice", "id": 1, "type": "User", "site_admin": false },
+  "event": "closed",
+  "commit_id": null,
+  "commit_url": null,
+  "created_at": "2026-11-01T12:00:00Z",
+  "state_reason": "completed",
+  "performed_via_github_app": null
+}

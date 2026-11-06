@@ -1,0 +1,23 @@
+{
+  "id": 1,
+  "node_id": "MDU6SXNzdWUx",
+  "url": "https://api.github.com/repos/acme/web-app/issues/7",
+  "repository_url": "https://api.github.com/repos/acme/web-app",
+  "html_url": "https://github.com/acme/web-app/issues/7",
+  "number": 7,
+  "state": "open",
+  "title": "Add a /health endpoint",
+  "body": "We need a /health endpoint that returns 200.",
+  "user": { "login": "carol", "id": 3, "type": "User", "site_admin": false },
+  "labels": [{ "id": 208045946, "node_id": "MDU6TGFiZWwyMDgwNDU5NDY=", "name": "factory:ready", "description": "", "color": "0e8a16", "default": false }],
+  "assignee": null,
+  "assignees": [],
+  "milestone": null,
+  "locked": false,
+  "comments": 0,
+  "closed_at": null,
+  "created_at": "2026-11-01T09:00:00Z",
+  "updated_at": "2026-11-01T09:00:00Z",
+  "author_association": "CONTRIBUTOR",
+  "state_reason": null
+}

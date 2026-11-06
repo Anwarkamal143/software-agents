@@ -38,4 +38,12 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - run: npm test
+      # The hostile-fixture security suite against a real Claude session (#30). It needs a key,
+      # so it runs only where the ANTHROPIC_API_KEY secret is set; the key reaches this step alone.
+      - name: Security suite (live Claude session)
+        env:
+          LIVE_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "$LIVE_KEY" ]; then echo "::warning title=Security suite skipped::No ANTHROPIC_API_KEY secret, so the live hostile-fixture suite (including the Linux fail-closed SDK case) did not run."; exit 0; fi
+          ANTHROPIC_API_KEY="$LIVE_KEY" FACTORY_LIVE_SDK=1 npx vitest run test/sdk-isolation.live.test.ts
       - run: npm run build

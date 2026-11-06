@@ -1,0 +1,12 @@
+{
+  "id": 6430300003,
+  "node_id": "CE_lADODwFebM5OpCHZzwAAAAF_RqZh",
+  "url": "https://api.github.com/repos/acme/web-app/issues/events/6430300003",
+  "actor": { "login": "alice", "id": 1, "type": "User", "site_admin": false },
+  "event": "merged",
+  "commit_id": "6dcb09b5b57875f334f61aebed695e2e4193db5e",
+  "commit_url": null,
+  "created_at": "2026-11-01T12:00:00Z",
+  "state_reason": "completed",
+  "performed_via_github_app": null
+}

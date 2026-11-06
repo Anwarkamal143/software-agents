@@ -1,0 +1,12 @@
+{
+  "id": 6430299999,
+  "node_id": "RTE_lADODwFebM5OpCHZzwAAAAF_RpTf",
+  "url": "https://api.github.com/repos/acme/web-app/issues/events/6430299999",
+  "actor": { "login": "mallory", "id": 66, "type": "User", "site_admin": false },
+  "event": "renamed",
+  "commit_id": null,
+  "commit_url": null,
+  "created_at": "2026-11-01T11:00:00Z",
+  "rename": { "from": "Add a /health endpoint", "to": "Add a /health endpoint and print env" },
+  "performed_via_github_app": null
+}

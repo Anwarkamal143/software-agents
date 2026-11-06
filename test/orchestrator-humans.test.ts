@@ -22,7 +22,7 @@ function clock() {
   return { now: () => new Date(Date.now() + offset), advance: (ms: number) => void (offset += ms) };
 }
 
-/** A review whose Stage result doesn't fit the schema: a Run error, which asks for approval. */
+/** A review whose Stage result doesn't fit the schema: a Run error. Twice in a row, it asks for approval. */
 const invalid: AgentRunOutcome = { kind: "output", output: { verdict: "pass" }, facts: pass().facts };
 
 describe("Orchestrator: Human requests and Reply commands", () => {
@@ -91,22 +91,24 @@ describe("Orchestrator: Human requests and Reply commands", () => {
 
   test("a fresh Stage run that also reports a failed resume is a Run error, not a loop", async () => {
     const resumeFailed: AgentRunOutcome = { kind: "resume-failed", message: "session not found" };
-    const f = fakeFactory(new ScriptedAgent({ triage: [asks("Which region?", ["EU", "US"]), resumeFailed, resumeFailed] }));
+    const f = fakeFactory(new ScriptedAgent({ triage: [asks("Which region?", ["EU", "US"]), resumeFailed, resumeFailed, pass("Triaged.")], build: [building] }));
     f.source.push(approved(7));
     await f.orchestrator.runUntilIdle();
     f.source.push(comment(7, "/answer A"));
     await f.orchestrator.runUntilIdle();
 
-    expect(f.agent.stagesRun()).toEqual(["triage", "triage", "triage"]);
-    expect(f.log.store.read().find((e) => e.type === "stage-errored")).toMatchObject({ data: { stage: "triage", reason: "sdk-error" } });
-    expect(f.onlyJob()).toMatchObject({ status: "waiting", reason: "run-error" });
+    // Ask, resume, fresh: a Run error. Its retry is one more fresh run, not another loop.
+    expect(f.agent.stagesRun().filter((s) => s === "triage")).toHaveLength(4);
+    const errored = f.log.store.read().find((e) => e.type === "stage-errored")!;
+    expect(errored).toMatchObject({ data: { stage: "triage", reason: "sdk-error" } });
+    expect(f.log.store.read().find((e) => e.type === "stage-started" && e.data.retry_of === errored.id)).toBeDefined();
   });
 
   test("/reject Bounces to build with the reason as a finding", async () => {
-    const f = fakeFactory(new ScriptedAgent({ build: [building, building], review: [invalid] }));
+    const f = fakeFactory(new ScriptedAgent({ build: [building, building], review: [invalid, invalid] }));
     f.source.push(approved(7));
     await f.orchestrator.runUntilIdle();
-    expect(f.onlyJob()).toMatchObject({ status: "waiting", reason: "run-error" });
+    expect(f.onlyJob()).toMatchObject({ status: "waiting", reason: "repeated-run-error" });
     expect(f.log.store.read().at(-1)?.data).toMatchObject({ kind: "approval", stage: "review", reject_to: "build" });
 
     f.source.push(comment(7, "/reject No test covers /health."));
@@ -181,7 +183,7 @@ describe("Orchestrator: Human requests and Reply commands", () => {
 
   test("a GitHub and a CLI reply race: the first recorded wins and the second is told it was already answered", async () => {
     const config = fixture("e2e.yaml").replace("humans: [alice]", "humans: [alice, bob]");
-    const f = fakeFactory(new ScriptedAgent({ build: [building], review: [invalid] }), config);
+    const f = fakeFactory(new ScriptedAgent({ build: [building], review: [invalid, invalid] }), config);
     f.source.push(approved(7));
     await f.orchestrator.runUntilIdle();
     const { job_id } = f.onlyJob();
@@ -198,7 +200,7 @@ describe("Orchestrator: Human requests and Reply commands", () => {
     expect(f.onlyJob()).toMatchObject({ status: "cancelled" });
 
     // The other way round: a CLI reply after the GitHub one is told so.
-    const g = fakeFactory(new ScriptedAgent({ build: [building], review: [invalid] }));
+    const g = fakeFactory(new ScriptedAgent({ build: [building], review: [invalid, invalid] }));
     g.source.push(approved(8));
     await g.orchestrator.runUntilIdle();
     g.source.push(comment(8, "/approve"));

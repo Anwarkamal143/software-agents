@@ -31,5 +31,8 @@ export interface JobStore {
    * interleave with another writer, in this process or another. Throwing rolls back.
    */
   transaction<T>(fn: () => T): T;
+  /** A named read cursor kept beside the Event log, such as where the Source poll got to; null if never saved. */
+  cursor(name: string): string | null;
+  saveCursor(name: string, value: string | null): void;
   close(): void;
 }

@@ -1,4 +1,4 @@
-import type { AgentAdapter, AgentRunOutcome, AgentRunRequest, MeasuredFacts } from "../../src/agents/adapter.js";
+import type { AgentAdapter, AgentRunOutcome, AgentRunRequest, MeasuredFacts, RunErrorReason } from "../../src/agents/adapter.js";
 import type { Finding } from "../../src/stages/result.js";
 import { commitAll, writeIn } from "../helpers/git.js";
 
@@ -74,3 +74,20 @@ export const building = (req: AgentRunRequest, files: Record<string, string> = {
   commitAll(req.workingCopy.dir, "Build");
   return pass("Built it.");
 };
+
+/** A Run error the adapter reports, from agent session `session_id` if given. */
+export const errored = (reason: RunErrorReason, message: string, session_id?: string, over: Partial<MeasuredFacts> = {}): Extract<AgentRunOutcome, { kind: "error" }> => ({
+  kind: "error",
+  reason,
+  message,
+  facts: facts(over),
+  ...(session_id && { session_id }),
+});
+
+/** A session that never ends on its own: it reports nothing until it's aborted. */
+export const hangs = (req: AgentRunRequest): Promise<AgentRunOutcome> =>
+  new Promise((resolve) => {
+    const end = () => resolve(errored("crash", "aborted"));
+    if (req.signal?.aborted) end();
+    else req.signal?.addEventListener("abort", end, { once: true });
+  });

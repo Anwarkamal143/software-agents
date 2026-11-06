@@ -1,0 +1,5 @@
+{
+  "name": "factory",
+  "version": "0.1.0",
+  "description": "Software Factory Stage instructions. Behaviour only: no hooks, no MCP servers, no control logic (ADR 0001, ADR 0007)."
+}

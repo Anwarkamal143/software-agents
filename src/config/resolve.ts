@@ -17,7 +17,7 @@ export interface ResolvedStage {
   tools?: ToolProfile;
   /** Check Stages: the repo's commands, empty if it has none. */
   commands?: string[];
-  /** Check Stages: the hosts the commands may reach, from the repo's `network`. */
+  /** The hosts commands may reach, from the repo's `network`. An Agent Stage gets them only if it writes the branch. */
   network?: string[];
   /** Check Stages: keychain names of the secrets the commands get, from the repo's `check_secrets`. */
   secrets?: string[];
@@ -138,6 +138,7 @@ export function resolve(config: FactoryConfig, job: JobInput): Resolution {
       id,
       kind: "agent",
       tools: stage.tools,
+      network: repo.network ?? [],
       model: override?.model ?? stage.model ?? repo.agent?.model ?? config.agent.model,
       instructions: override?.instructions ?? stage.instructions,
       ...(stage.on_fail && { on_fail: stage.on_fail }),

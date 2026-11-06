@@ -2,7 +2,8 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ConfigHolder } from "../../src/config/holder.js";
 import { EventLog } from "../../src/jobs/event-log.js";
-import { Orchestrator } from "../../src/orchestrator/orchestrator.js";
+import { Orchestrator, type OrchestratorDeps } from "../../src/orchestrator/orchestrator.js";
+import type { JobStore } from "../../src/store/job-store.js";
 import { PrePushChecks } from "../../src/repos/prepush.js";
 import { Clones } from "../../src/repos/clones.js";
 import { SandboxedCheckRunner, type Sandbox } from "../../src/stages/check-runner.js";
@@ -19,17 +20,37 @@ import { gitleaksPath } from "./gitleaks.js";
 import { tmpHome } from "./tmp.js";
 
 /** A whole Factory on fakes: real Event log, config and sandboxed Check Stages; scripted agent, fake Source, Mirror and keychain. */
-export function fakeFactory(agent = new ScriptedAgent(), configText = fixture("e2e.yaml"), opts: { secrets?: FakeSecrets; sandbox?: Sandbox; now?: () => Date } = {}) {
+export interface FakeFactoryOptions {
+  secrets?: FakeSecrets;
+  sandbox?: Sandbox;
+  now?: () => Date;
+  /** Wraps the Job store the Orchestrator writes to, such as to make it fail. */
+  wrapStore?: (store: JobStore) => JobStore;
+  limits?: OrchestratorDeps["limits"];
+  /** Replaces waiting between transient retries; records how long it would have waited. */
+  sleeps?: number[];
+}
+
+export function fakeFactory(agent = new ScriptedAgent(), configText = fixture("e2e.yaml"), opts: FakeFactoryOptions = {}) {
   const home = tmpHome();
   writeFileSync(join(home, "factory.yaml"), configText);
   const remote = makeRemote(join(home, "github"));
+  return factoryAt(home, remote, agent, opts);
+}
+
+/**
+ * A Factory on an existing home and remote: another Orchestrator over the same Job store,
+ * as after a restart. The previous one is simply never called again.
+ */
+export function factoryAt(home: string, remote: string, agent = new ScriptedAgent(), opts: FakeFactoryOptions = {}) {
   const clones = new Clones(home, { remoteUrl: () => remote });
   const source = new FakeSource();
   const mirror = new FakeMirror();
   const artifacts = new ArtifactStore(home);
   const secrets = opts.secrets ?? new FakeSecrets();
   const notifier = new FakeNotifier();
-  const log = new EventLog(openSqliteJobStore(join(home, "factory.db")));
+  const store = openSqliteJobStore(join(home, "factory.db"));
+  const log = new EventLog(opts.wrapStore ? opts.wrapStore(store) : store);
   const orchestrator = new Orchestrator({
     log,
     config: ConfigHolder.open(join(home, "factory.yaml")),
@@ -43,6 +64,8 @@ export function fakeFactory(agent = new ScriptedAgent(), configText = fixture("e
     prePush: new PrePushChecks(home, { gitleaks: gitleaksPath() }),
     notifier,
     ...(opts.now && { now: opts.now }),
+    ...(opts.limits && { limits: opts.limits }),
+    sleep: async (ms: number) => void opts.sleeps?.push(ms),
   });
   /** Event types for one Job, in order. */
   const types = (job_id: string) => log.store.read().filter((e) => e.job_id === job_id).map((e) => e.type);
