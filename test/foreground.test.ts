@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { LockHeld } from "../src/orchestrator/lock.js";
 import { JobStoreUnwritable } from "../src/orchestrator/orchestrator.js";
-import { runFactory, type FactoryLoop } from "../src/orchestrator/runner.js";
+import { runFactory, type FactoryLoop } from "../src/orchestrator/foreground.js";
 import { tmpHome } from "./helpers/tmp.js";
 
 const tick = (ms: number) => new Promise((r) => setTimeout(r, ms));

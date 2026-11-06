@@ -4,7 +4,7 @@ import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentRunOutcome, AgentRunRequest } from "../src/agents/adapter.js";
 import { acquireLock, LockHeld } from "../src/orchestrator/lock.js";
-import { approved } from "./fakes/source.js";
+import { approved, comment } from "./fakes/source.js";
 import { building, hangs, pass, ScriptedAgent } from "./fakes/agent.js";
 import { factoryAt, fakeFactory } from "./helpers/factory.js";
 import { tmpHome } from "./helpers/tmp.js";
@@ -80,6 +80,31 @@ describe("Orchestrator: restart", () => {
 
     expect(third.agent.requests[0]!.resume).toBeUndefined();
     expect(third.log.store.read().at(-1)).toMatchObject({ type: "checkpoint-evaluated" });
+  });
+
+  test("a Stage run cut off while its Job waits for re-approval is interrupted too, and resumes once re-approved", async () => {
+    const f = fakeFactory(
+      new ScriptedAgent({
+        build: [
+          async (req: AgentRunRequest) => {
+            req.events.session("s-held");
+            f.source.push({ kind: "edited", repo: "acme/web-app", issue: { number: 7, title: "Issue 7", body: "Changed." }, hash: "h", by: "mallory" });
+            await f.orchestrator.poll();
+            return hangs(req);
+          },
+        ],
+      }),
+    );
+    f.source.push(approved(7));
+    await killDuring(f, "build");
+    expect(f.onlyJob()).toMatchObject({ status: "waiting", reason: "reapproval" });
+
+    const again = factoryAt(f.home, f.remote, new ScriptedAgent({ build: [building] }));
+    await again.orchestrator.start();
+    expect(again.log.store.read().filter((e) => e.type === "stage-interrupted").map((e) => e.data)).toEqual([{ stage: "build", session_id: "s-held" }]);
+    again.source.push(comment(7, "/approve"));
+    await again.orchestrator.runUntilIdle();
+    expect(again.agent.requests[0]!.resume?.session_id).toBe("s-held");
   });
 
   test("a Job parked by the plan limit stays parked across a restart until resetsAt", async () => {

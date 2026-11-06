@@ -9,7 +9,7 @@ import { housekeep } from "../housekeeping/housekeeping.js";
 import { OsNotifier } from "../humans/notify.js";
 import { EventLog } from "../jobs/event-log.js";
 import { Orchestrator } from "../orchestrator/orchestrator.js";
-import { runFactory } from "../orchestrator/runner.js";
+import { runFactory } from "../orchestrator/foreground.js";
 import { Clones } from "../repos/clones.js";
 import { PrePushChecks } from "../repos/prepush.js";
 import { OsKeychain, type SecretStore } from "../secrets/keychain.js";

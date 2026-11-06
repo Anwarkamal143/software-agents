@@ -25,6 +25,8 @@ export class FakeGitHub {
   requests: { method: string; path: string; headers: Record<string, string> }[] = [];
   /** The next this-many requests fail with a 502. */
   failNext = 0;
+  /** Once this many requests have been made, every later one fails with a 502. */
+  failAfter: number | null = null;
   rateLimit = 5000;
   /** Who GraphQL says last edited an issue body. */
   editor: string | null = null;
@@ -86,6 +88,7 @@ export class FakeGitHub {
   fetch: Fetch = async (url, init) => {
     const u = new URL(url);
     this.requests.push({ method: init.method, path: u.pathname + u.search, headers: init.headers });
+    if (this.failAfter !== null && this.requests.length > this.failAfter) return new Response("bad gateway", { status: 502 });
     if (this.failNext > 0) {
       this.failNext--;
       return new Response("bad gateway", { status: 502 });

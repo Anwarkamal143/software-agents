@@ -173,10 +173,11 @@ export class Orchestrator {
    */
   async start(): Promise<void> {
     const started = await this.record({ type: "factory-started", actor: "orchestrator" });
-    for (const job of this.deps.log.jobs().filter((j) => j.status === "running")) {
+    // Running Jobs, and Jobs whose Stage run was held for re-approval when the Orchestrator died.
+    for (const job of this.deps.log.jobs().filter((j) => j.status === "running" || (j.status === "waiting" && j.reason === "reapproval"))) {
       const events = this.deps.log.eventsFor(job.job_id);
       const run = events.findLast((e) => e.type === "stage-started" || e.type === "stage-resumed");
-      if (!run) continue;
+      if (!run || events.some((e) => e.stage_run_id === run.stage_run_id && RUN_ENDINGS.has(e.type))) continue;
       const reported = events.findLast((e) => e.type === "session-started" && e.stage_run_id === run.stage_run_id)?.data.session_id;
       const session_id = reported ?? (run.type === "stage-resumed" ? run.data.session_id : undefined);
       await this.record({
@@ -257,7 +258,8 @@ export class Orchestrator {
       case "unapproved":
       case "closed": {
         const live = this.liveJob(item.repo, item.issue);
-        if (!live) return;
+        // Only someone on `humans` can end a Job, whatever GitHub lets them do to the issue.
+        if (!live || !this.deps.config.current.humans.includes(item.by)) return;
         const reason = item.kind === "unapproved" ? "ready label removed" : `issue closed by ${item.by}`;
         await this.record({ type: "job-cancelled", job_id: live.job_id, attempt: live.attempt, actor: `human:${item.by}`, data: { reason } });
         await this.deps.clones.removeJob(live.job_id);
@@ -540,12 +542,14 @@ export class Orchestrator {
       budget: ctx.resolution.policies.budgets.stage_run,
       resultSchema: STAGE_RESULT_SCHEMA,
     };
-    let watched = await this.withTransientRetries(run, resume ? { ...request, resume } : request);
+    // Guard denials count across every session of this Stage run (ADR 0007).
+    const tally = { denials: 0 };
+    let watched = await this.withTransientRetries(run, resume ? { ...request, resume } : request, tally);
     let resumeFailed: string | undefined;
     if (watched.outcome.kind === "resume-failed" && !watched.cutoff) {
       // The session can't be resumed: start a fresh one, which has the Q&A in its brief.
       resumeFailed = watched.outcome.message;
-      watched = await this.withTransientRetries(run, request);
+      watched = await this.withTransientRetries(run, request, tally);
     }
     const { outcome, cutoff, rateLimited } = watched;
     const session_id = "session_id" in outcome ? outcome.session_id : undefined;
@@ -580,9 +584,9 @@ export class Orchestrator {
   }
 
   /** Transient errors are retried with backoff, about five minutes in all, without counting (ADR 0010). */
-  private async withTransientRetries(run: RunEnvelope, request: Omit<AgentRunRequest, "events" | "signal">): Promise<Watched> {
+  private async withTransientRetries(run: RunEnvelope, request: Omit<AgentRunRequest, "events" | "signal">, tally: { denials: number }): Promise<Watched> {
     for (let i = 0; ; i++) {
-      const watched = await this.session(run, request);
+      const watched = await this.session(run, request, tally);
       const { outcome } = watched;
       const transient = outcome.kind === "error" && outcome.transient && !watched.cutoff && !watched.rateLimited;
       if (!transient || i >= TRANSIENT_BACKOFF_MS.length || this.stopping.signal.aborted) return watched;
@@ -599,7 +603,7 @@ export class Orchestrator {
    * cut off at the wall-clock Budget, after too long with no message, at the third Guard
    * denial, or when the Orchestrator stops. What the session reports is recorded in order.
    */
-  private async session(run: RunEnvelope, request: Omit<AgentRunRequest, "events" | "signal">): Promise<Watched> {
+  private async session(run: RunEnvelope, request: Omit<AgentRunRequest, "events" | "signal">, tally: { denials: number }): Promise<Watched> {
     const limits = this.sessionLimits(request.budget);
     const controller = new AbortController();
     let cutoff: Cutoff | null = null;
@@ -626,7 +630,6 @@ export class Orchestrator {
         },
       );
     };
-    let denials = 0;
     let rateLimited = false;
     const stage = String(request.brief.stage);
     const events: AgentRunEvents = {
@@ -637,7 +640,7 @@ export class Orchestrator {
       session: (session_id) => later(() => this.record({ ...run, actor: "orchestrator", type: "session-started", data: { stage, session_id } })),
       guardBlocked: (denial) => {
         later(() => this.record({ ...run, actor: "orchestrator", type: "guard-blocked", data: { guard: denial.guard, tool: denial.tool, why: denial.why } }));
-        if (++denials >= MAX_GUARD_DENIALS) cut("guard-denials");
+        if (++tally.denials >= MAX_GUARD_DENIALS) cut("guard-denials");
       },
       rateLimit: (info) => {
         if (info.status === "rejected") rateLimited = true;
@@ -892,6 +895,9 @@ export class Orchestrator {
 }
 
 type RunEnvelope = Pick<NewEvent, "job_id" | "attempt" | "stage_run_id" | "actor" | "caused_by">;
+
+/** How a Stage run ends: a run with none of these is unfinished. */
+const RUN_ENDINGS = new Set(["stage-passed", "stage-failed", "stage-needs-human", "stage-errored", "stage-interrupted", "prepush-failed"]);
 
 /** The Job store cursor the Source poll carries on from. */
 const SOURCE_CURSOR = "source";

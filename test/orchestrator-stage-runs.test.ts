@@ -96,6 +96,25 @@ describe("Orchestrator: watching a Stage run", () => {
     expect(f.onlyJob()).toMatchObject({ status: "waiting", reason: "guard-denials" });
   });
 
+  test("Guard denials count across the sessions of one Stage run, transient retries included", async () => {
+    const deniedThenTransient = (req: AgentRunRequest): AgentRunOutcome => {
+      req.events.guardBlocked({ guard: "secret-file", tool: "Read", why: ".env is a secret file" });
+      req.events.guardBlocked({ guard: "secret-file", tool: "Read", why: ".env is a secret file" });
+      return { ...errored("sdk-error", "API overloaded (529)"), transient: true };
+    };
+    const oneMore = (req: AgentRunRequest) => {
+      req.events.guardBlocked({ guard: "secret-file", tool: "Read", why: ".env is a secret file" });
+      return hangs(req);
+    };
+    const f = fakeFactory(new ScriptedAgent({ triage: [deniedThenTransient, oneMore] }), undefined, { sleeps: [] });
+    f.source.push(approved(7));
+
+    await f.orchestrator.runUntilIdle();
+
+    expect(f.log.store.read().filter((e) => e.type === "guard-blocked")).toHaveLength(3);
+    expect(f.onlyJob()).toMatchObject({ status: "waiting", reason: "guard-denials" });
+  });
+
   test("two Guard denials are recorded and the Stage run carries on", async () => {
     const twice = (req: AgentRunRequest) => {
       req.events.guardBlocked({ guard: "outside-working-copy", tool: "Write", why: "/tmp/x is outside the Working copy" });

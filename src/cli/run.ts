@@ -194,7 +194,7 @@ function retry(args: string[], io: CliIo): number {
       return 1;
     }
     log.record({ type: "job-retried", job_id, attempt: job.attempt, actor: "cli" });
-    io.stdout.write(`Recorded a retry for Job ${job_id}. The Factory starts Attempt ${job.attempt + 1} at its next step.\n`);
+    io.stdout.write(`Recorded. The Factory starts Job ${job_id}'s Attempt ${job.attempt + 1} at its next step.\n`);
     return 0;
   } finally {
     store.close();

@@ -162,6 +162,19 @@ describe("GitHub Source", () => {
     expect((await source.poll(cursor)).items.map((i) => i.kind)).toEqual(["approved"]);
   });
 
+  test("a repo whose poll fails partway returns none of its changes, so none comes twice", async () => {
+    const s = setup();
+    const source = s.source();
+    const { cursor } = await source.poll(null);
+    s.github.issue(REPO, 7, { at: at(1) }).issue(REPO, 8, { at: at(2) });
+    s.github.label(REPO, 7, at(3), "alice");
+    s.github.label(REPO, 8, at(4), "alice");
+    // The issue list and issue 7's timeline answer; then GitHub goes down.
+    s.github.failAfter = s.github.requests.length + 2;
+
+    expect((await source.poll(cursor)).items).toEqual([]);
+  });
+
   test("write access is asked of GitHub per person", async () => {
     const s = setup();
     const source = s.source();

@@ -82,6 +82,15 @@ describe("Orchestrator: what the Source reports", () => {
     expect(f.onlyJob()).toMatchObject({ status: "cancelled", reason: "issue closed by alice" });
   });
 
+  test("closing the issue by someone not on humans changes nothing", async () => {
+    const f = fakeFactory();
+    f.source.push(approved(7));
+    await f.orchestrator.runUntilIdle();
+    f.source.push({ kind: "closed", repo: REPO, issue: 7, by: "mallory" });
+    await f.orchestrator.runUntilIdle();
+    expect(f.onlyJob().status).not.toBe("cancelled");
+  });
+
   test("a human merging the Job's PR merges the Job", async () => {
     const f = fakeFactory(new ScriptedAgent({ build: [building] }));
     f.source.push(approved(7));

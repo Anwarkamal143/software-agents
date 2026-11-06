@@ -77,8 +77,10 @@ export class GitHubSource implements Source {
     let down = false;
     for (const repo of config.repos) {
       try {
-        // Whole or nothing per repo: its cursor moves only once every change is read.
-        const next = await this.pollRepo(repo, cursor.repos[repo], config, (at, item) => found.push({ at, order: found.length, item }));
+        // Whole or nothing per repo: its changes and its cursor count only once every change is read.
+        const changes: { at: string; item: SourceItem }[] = [];
+        const next = await this.pollRepo(repo, cursor.repos[repo], config, (at, item) => changes.push({ at, item }));
+        for (const c of changes) found.push({ ...c, order: found.length });
         if (next) cursor.repos[repo] = next;
       } catch (err) {
         if (err instanceof GitHubAuthError) throw err;
