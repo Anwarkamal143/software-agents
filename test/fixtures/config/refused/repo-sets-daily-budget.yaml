@@ -1,0 +1,13 @@
+version: 1
+humans: [alice]
+stages:
+  build: { kind: agent, instructions: factory:build, tools: write-branch }
+  verify: { kind: check, run: verify }
+  review: { kind: agent, instructions: factory:review, tools: read-only, on_fail: build }
+pipelines:
+  feature: { stages: [build, verify, review] }
+repos:
+  - name: acme/web-app
+    default_pipeline: feature
+    commands: { verify: ["npm test"] }
+    policies: { budgets: { daily: { usd: 200 } } }

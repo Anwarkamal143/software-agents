@@ -1,0 +1,232 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/Anwarkamal143/software-agents/schema/factory.schema.json",
+  "title": "Factory configuration (~/.factory/factory.yaml)",
+  "description": "The one Factory configuration file. It lives in the Factory home, never in a Target repo (ADR 0005). Semantic rules (tighten-only layering, Factory-wide values, Bounce direction, secrets as references) are checked by `factory config check` on top of this schema.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "humans", "stages", "pipelines", "repos"],
+  "properties": {
+    "version": { "const": 1 },
+    "humans": {
+      "description": "GitHub logins allowed to approve Jobs and send Reply commands.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "max_running": {
+      "description": "Factory-wide cap on concurrent Stage runs.",
+      "type": "integer",
+      "minimum": 1,
+      "default": 2
+    },
+    "agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "default": {},
+      "properties": {
+        "adapter": { "const": "claude", "default": "claude" },
+        "auth": { "enum": ["api-key", "subscription"], "default": "api-key", "description": "Sign-in mode. A Factory-wide value." },
+        "model": { "type": "string", "minLength": 1, "default": "claude-sonnet-5-5" },
+        "api_key": { "$ref": "#/definitions/secretRef" }
+      }
+    },
+    "state": {
+      "description": "Job store and Mirrors. Factory-wide values.",
+      "type": "object",
+      "additionalProperties": false,
+      "default": {},
+      "properties": {
+        "store": { "enum": ["sqlite", "postgres"], "default": "sqlite" },
+        "mirrors": { "type": "array", "items": { "const": "github" }, "default": ["github"] },
+        "postgres_url": { "$ref": "#/definitions/secretRef" }
+      }
+    },
+    "sources": {
+      "type": "array",
+      "default": [{ "kind": "github-issues", "ready_label": "factory:ready" }],
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind"],
+        "properties": {
+          "kind": { "const": "github-issues" },
+          "ready_label": { "type": "string", "minLength": 1, "default": "factory:ready" }
+        }
+      }
+    },
+    "policies": { "$ref": "#/definitions/ownerPolicies", "default": {} },
+    "stages": {
+      "description": "The Stage library: each Stage defined once, used by Pipelines by name.",
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "$ref": "#/definitions/stage" }
+    },
+    "pipelines": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["stages"],
+        "properties": {
+          "stages": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+          "policies": { "$ref": "#/definitions/policies" }
+        }
+      }
+    },
+    "repos": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/repo" }
+    },
+    "label_overrides": {
+      "description": "Issue labels that apply a tighten-only Policy patch.",
+      "type": "object",
+      "default": {},
+      "additionalProperties": { "$ref": "#/definitions/policies" }
+    }
+  },
+  "definitions": {
+    "secretRef": {
+      "description": "A reference to a secret, `${env:NAME}` or `keychain:NAME`, never the secret itself.",
+      "type": "string"
+    },
+    "riskRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "labels": { "type": "array", "items": { "type": "string" } },
+        "paths": { "type": "array", "items": { "type": "string" } },
+        "keywords": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "budgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "stage_run": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "usd": { "type": "number", "exclusiveMinimum": 0 },
+            "turns": { "type": "integer", "minimum": 1 },
+            "minutes": { "type": "number", "exclusiveMinimum": 0 }
+          }
+        },
+        "job": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": { "usd": { "type": "number", "exclusiveMinimum": 0 } }
+        },
+        "daily": {
+          "description": "A Factory-wide value.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": { "usd": { "type": "number", "exclusiveMinimum": 0 } }
+        }
+      }
+    },
+    "policyProperties": {
+      "autonomy": { "enum": ["off", "trial", "auto"] },
+      "bounce_cap": { "type": "integer", "minimum": 0 },
+      "size_cap": { "type": "integer", "minimum": 1 },
+      "post_merge_watch_minutes": { "type": "number", "minimum": 0 }
+    },
+    "policies": {
+      "description": "A tighten-only Policy patch (Pipeline or label).",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "autonomy": { "$ref": "#/definitions/policyProperties/autonomy" },
+        "bounce_cap": { "$ref": "#/definitions/policyProperties/bounce_cap" },
+        "size_cap": { "$ref": "#/definitions/policyProperties/size_cap" },
+        "post_merge_watch_minutes": { "$ref": "#/definitions/policyProperties/post_merge_watch_minutes" },
+        "budgets": { "$ref": "#/definitions/budgets" }
+      }
+    },
+    "ownerPolicies": {
+      "description": "A Policy layer that may loosen (Factory or Target repo), add Risk rules or switch them off by name.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "autonomy": { "$ref": "#/definitions/policyProperties/autonomy" },
+        "bounce_cap": { "$ref": "#/definitions/policyProperties/bounce_cap" },
+        "size_cap": { "$ref": "#/definitions/policyProperties/size_cap" },
+        "post_merge_watch_minutes": { "$ref": "#/definitions/policyProperties/post_merge_watch_minutes" },
+        "budgets": { "$ref": "#/definitions/budgets" },
+        "risk_rules": { "type": "array", "items": { "$ref": "#/definitions/riskRule" } },
+        "risk_rules_off": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "stage": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": { "kind": { "enum": ["agent", "check"] } },
+      "if": { "properties": { "kind": { "const": "agent" } } },
+      "then": {
+        "additionalProperties": false,
+        "required": ["instructions", "tools"],
+        "properties": {
+          "kind": { "const": "agent" },
+          "instructions": { "type": "string", "minLength": 1 },
+          "tools": { "enum": ["read-only", "write-branch"] },
+          "model": { "type": "string", "minLength": 1 },
+          "on_fail": { "type": "string" }
+        }
+      },
+      "else": {
+        "additionalProperties": false,
+        "required": ["run"],
+        "properties": {
+          "kind": { "const": "check" },
+          "run": { "type": "string", "minLength": 1, "description": "Name of the Target repo's `commands` list to run." },
+          "on_fail": { "type": "string" }
+        }
+      }
+    },
+    "repo": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "default_pipeline"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
+        "default_pipeline": { "type": "string" },
+        "commands": {
+          "type": "object",
+          "additionalProperties": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+        },
+        "network": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "check_secrets": {
+          "description": "Keychain names of check secrets, set with `factory secret set`.",
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" }
+        },
+        "max_running": { "type": "integer", "minimum": 1 },
+        "policies": { "$ref": "#/definitions/ownerPolicies" },
+        "stage_overrides": {
+          "description": "A repo may change only `model` and `instructions` of a library Stage.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "model": { "type": "string", "minLength": 1 },
+              "instructions": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "agent": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "model": { "type": "string", "minLength": 1 },
+            "auth": { "description": "Not allowed here: sign-in mode is a Factory-wide value.", "type": "string" }
+          }
+        },
+        "state": { "description": "Not allowed here: the Job store and Mirrors are Factory-wide values." }
+      }
+    }
+  }
+}
