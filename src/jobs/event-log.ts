@@ -35,6 +35,17 @@ export class EventLog {
     return appended;
   }
 
+  /**
+   * Runs `fn` against an up-to-date log while holding the Job store's write lock: a decision
+   * `fn` makes from what it reads can't be raced by another writer (such as the CLI).
+   */
+  exclusive<T>(fn: () => T): T {
+    return this.store.transaction(() => {
+      this.catchUp();
+      return fn();
+    });
+  }
+
   /** Every event of one Job, in seq order. */
   eventsFor(job_id: string): FactoryEvent[] {
     return this.store.read().filter((e) => e.job_id === job_id);

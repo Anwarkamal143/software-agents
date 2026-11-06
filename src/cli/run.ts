@@ -1,6 +1,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { loadConfig } from "../config/load.js";
+import { parseReplyCommand } from "../humans/commands.js";
+import { recordReply } from "../humans/replies.js";
+import { EventLog } from "../jobs/event-log.js";
 import { homePaths } from "../home.js";
 import { computeJobs, type JobState } from "../jobs/projection.js";
 import type { JobStore } from "../store/job-store.js";
@@ -19,6 +22,10 @@ Commands:
   events [--from <seq>] [--json]
                             Print the Event log from a seq (default 1)
   config check [<file>]     Check factory.yaml (default: the one in the Factory home)
+  answer <job> <option>     Answer a waiting Job's question: A, B, C or other: <text>
+  approve <job>             Approve what a waiting Job asked for
+  reject <job> <reason>     Reject it: the Job Bounces to build with the reason as a finding
+  cancel <job>              Cancel a waiting Job
 `;
 
 /** The `factory` CLI, in-process. Returns the exit code. */
@@ -30,6 +37,11 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
         return status(io);
       case "events":
         return events(rest, io);
+      case "answer":
+      case "approve":
+      case "reject":
+      case "cancel":
+        return reply(command, rest, io);
       case "config":
         if (rest[0] === "check") return configCheck(rest.slice(1), io);
         break;
@@ -84,6 +96,42 @@ function events(args: string[], io: CliIo): number {
   store?.close();
   return 0;
 }
+
+/** The CLI channel for Reply commands: parsed exactly like a comment, recorded like one (ADR 0006). */
+function reply(command: string, args: string[], io: CliIo): number {
+  const [job_id, ...words] = args;
+  if (!job_id) {
+    io.stderr.write(`Usage: factory ${command} <job>${command === "answer" ? " <option>" : command === "reject" ? " <reason>" : ""}\n`);
+    return 2;
+  }
+  const parsed = parseReplyCommand([`/${command}`, ...words].join(" "));
+  if (parsed.kind !== "command") {
+    io.stderr.write(`${parsed.kind === "malformed" ? parsed.why : "Not a Reply command."}\n`);
+    return 2;
+  }
+  const store = openStore(io.home);
+  if (!store) throw new Error("The Factory has no Jobs yet.");
+  try {
+    const log = new EventLog(store);
+    if (!log.job(job_id)) throw new Error(`No Job ${job_id}.`);
+    const outcome = recordReply(log, { job_id, channel: "cli", created_at: new Date().toISOString(), command: parsed.command });
+    if (outcome.kind === "answered") {
+      io.stdout.write(`Recorded /${command} for Job ${job_id}. The Factory acts on it at its next step.\n`);
+      return 0;
+    }
+    io.stderr.write(`${IGNORED_MESSAGE[outcome.why]?.(job_id) ?? `Not recorded: ${outcome.why}.`}\n`);
+    return 1;
+  } finally {
+    store.close();
+  }
+}
+
+const IGNORED_MESSAGE: Partial<Record<string, (job: string) => string>> = {
+  "already-answered": (job) => `Job ${job}'s request was already answered.`,
+  "not-waiting": (job) => `Job ${job} isn't waiting on a Human request.`,
+  "wrong-command": () => "That command doesn't answer this request: a question takes answer or cancel, an approval takes approve, reject or cancel.",
+  "no-such-option": () => "The question has no such option.",
+};
 
 function configCheck(args: string[], io: CliIo): number {
   const file = args[0] ?? homePaths(io.home).config;

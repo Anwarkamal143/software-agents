@@ -25,6 +25,11 @@ export interface AgentRunRequest {
   budget: { usd: number; turns: number; minutes: number };
   /** JSON Schema the session's structured output must match. */
   resultSchema: object;
+  /**
+   * Resume this earlier agent session instead of starting one, sending `input` (a human's
+   * answer, marked as human input) as its next turn. The brief still describes the Stage.
+   */
+  resume?: { session_id: string; input: string };
   signal?: AbortSignal;
 }
 
@@ -32,9 +37,11 @@ export type RunErrorReason = "crash" | "sdk-error" | "timeout" | "budget";
 
 export type AgentRunOutcome =
   /** The session ended with structured output. It isn't a Verdict until it passes the Stage result schema. */
-  | { kind: "output"; output: unknown; facts: MeasuredFacts }
+  | { kind: "output"; output: unknown; facts: MeasuredFacts; session_id?: string }
   /** The session broke rather than judged: a Run error (ADR 0010). */
-  | { kind: "error"; reason: RunErrorReason; message: string; facts: MeasuredFacts };
+  | { kind: "error"; reason: RunErrorReason; message: string; facts: MeasuredFacts; session_id?: string }
+  /** The session asked to be resumed couldn't be: nothing ran, so the Orchestrator starts a fresh one. */
+  | { kind: "resume-failed"; message: string };
 
 /** The single seam through which the Orchestrator runs one Agent Stage (ADR 0001). */
 export interface AgentAdapter {

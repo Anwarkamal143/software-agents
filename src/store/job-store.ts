@@ -26,5 +26,10 @@ export interface JobStore {
   read(fromSeq?: number, limit?: number): FactoryEvent[];
   /** Like `read`, then keeps delivering events as they are appended, until aborted. */
   follow(fromSeq?: number, options?: FollowOptions): AsyncIterable<FactoryEvent>;
+  /**
+   * Runs `fn` holding the store's write lock, so what it reads and what it appends can't
+   * interleave with another writer, in this process or another. Throwing rolls back.
+   */
+  transaction<T>(fn: () => T): T;
   close(): void;
 }

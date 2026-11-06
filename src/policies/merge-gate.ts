@@ -1,6 +1,6 @@
 import picomatch from "picomatch";
 import type { Autonomy } from "../config/types.js";
-import type { NewEvent } from "../events/envelope.js";
+import type { FactoryEvent, NewEvent } from "../events/envelope.js";
 import type { ChangedFile, RiskMatch } from "./risk.js";
 
 /** How a Stage's latest Stage run in this Attempt ended, and the head it ended at. */
@@ -138,7 +138,22 @@ export interface MergeInput {
   approved: boolean;
 }
 
-export type AskCause = "self-edited-checks" | "merge-gate" | "risk-rule" | "autonomy";
+/** Why the Merge gate checkpoint asks a human: an `/approve` of one of these is an approval to merge. */
+export const ASK_CAUSES = ["self-edited-checks", "merge-gate", "risk-rule", "autonomy"] as const;
+export type AskCause = (typeof ASK_CAUSES)[number];
+
+/**
+ * Whether a human `/approve`d merging this Attempt's work: an approve answering a Merge gate
+ * request, with nothing pushed since. It feeds `decideMerge`, which never lets it past the gate core.
+ */
+export function approvedAtMergeGate(events: FactoryEvent[]): boolean {
+  const lastPush = events.findLast((e) => e.type === "branch-pushed")?.seq ?? 0;
+  return events.some((e) => {
+    if (e.type !== "human-answered" || e.data.command !== "approve" || e.seq < lastPush) return false;
+    const request = events.find((r) => r.id === e.data.request);
+    return (ASK_CAUSES as readonly unknown[]).includes(request?.data.cause);
+  });
+}
 
 export type MergeDecision = (
   | { action: "merge"; why: string }

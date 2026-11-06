@@ -10,6 +10,7 @@ import { ArtifactStore } from "../../src/store/artifact-store.js";
 import { openSqliteJobStore } from "../../src/store/sqlite-job-store.js";
 import { ScriptedAgent } from "../fakes/agent.js";
 import { FakeMirror } from "../fakes/mirror.js";
+import { FakeNotifier } from "../fakes/notifier.js";
 import { FakeSecrets } from "../fakes/secrets.js";
 import { FakeSource } from "../fakes/source.js";
 import { fixture } from "./config.js";
@@ -18,7 +19,7 @@ import { gitleaksPath } from "./gitleaks.js";
 import { tmpHome } from "./tmp.js";
 
 /** A whole Factory on fakes: real Event log, config and sandboxed Check Stages; scripted agent, fake Source, Mirror and keychain. */
-export function fakeFactory(agent = new ScriptedAgent(), configText = fixture("e2e.yaml"), opts: { secrets?: FakeSecrets; sandbox?: Sandbox } = {}) {
+export function fakeFactory(agent = new ScriptedAgent(), configText = fixture("e2e.yaml"), opts: { secrets?: FakeSecrets; sandbox?: Sandbox; now?: () => Date } = {}) {
   const home = tmpHome();
   writeFileSync(join(home, "factory.yaml"), configText);
   const remote = makeRemote(join(home, "github"));
@@ -27,6 +28,7 @@ export function fakeFactory(agent = new ScriptedAgent(), configText = fixture("e
   const mirror = new FakeMirror();
   const artifacts = new ArtifactStore(home);
   const secrets = opts.secrets ?? new FakeSecrets();
+  const notifier = new FakeNotifier();
   const log = new EventLog(openSqliteJobStore(join(home, "factory.db")));
   const orchestrator = new Orchestrator({
     log,
@@ -39,6 +41,8 @@ export function fakeFactory(agent = new ScriptedAgent(), configText = fixture("e
     artifacts,
     clones,
     prePush: new PrePushChecks(home, { gitleaks: gitleaksPath() }),
+    notifier,
+    ...(opts.now && { now: opts.now }),
   });
   /** Event types for one Job, in order. */
   const types = (job_id: string) => log.store.read().filter((e) => e.job_id === job_id).map((e) => e.type);
@@ -47,5 +51,5 @@ export function fakeFactory(agent = new ScriptedAgent(), configText = fixture("e
     if (!job || rest.length) throw new Error(`expected one Job, found ${log.jobs().length}`);
     return job;
   };
-  return { home, remote, clones, source, mirror, log, agent, artifacts, secrets, orchestrator, types, onlyJob };
+  return { home, remote, clones, source, mirror, notifier, log, agent, artifacts, secrets, orchestrator, types, onlyJob };
 }
