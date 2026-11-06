@@ -1,7 +1,8 @@
 import { describe, expect, test } from "vitest";
 import type { Autonomy } from "../src/config/types.js";
+import type { FactoryEvent } from "../src/events/envelope.js";
 import { EventTypes } from "../src/events/registry.js";
-import { decideMerge, evaluateMergeGate, mergeGateEvents, selfEditedChecks, type MergeGateFacts, type StageAtGate } from "../src/policies/merge-gate.js";
+import { approvedAtMergeGate, decideMerge, evaluateMergeGate, mergeGateEvents, selfEditedChecks, type MergeGateFacts, type StageAtGate } from "../src/policies/merge-gate.js";
 import { BUILT_IN_RISK_RULES } from "../src/config/policies.js";
 import { matchRiskRules, type ChangedFile } from "../src/policies/risk.js";
 
@@ -229,5 +230,26 @@ describe("mergeGateEvents", () => {
       { type: "merge-gate-evaluated", data: { passed: false, head: H, failures: [{ code: "evidence", why: "no Evidence for the head c0ffee" }] } },
       { type: "checkpoint-evaluated", data: { checkpoint: "merge-gate", outcome: "ask", why: "no Evidence for the head c0ffee" } },
     ]);
+  });
+});
+
+describe("approvedAtMergeGate: /approve from the Event log", () => {
+  const ev = (seq: number, type: string, data: Record<string, unknown> = {}): FactoryEvent => ({
+    id: `e${seq}`, seq, type, schema_version: 2, at: "2026-11-01T10:00:00.000Z", job_id: "j", attempt: 1, stage_run_id: null, actor: "orchestrator", caused_by: null, data,
+  });
+  const asked = (cause: string) => [ev(1, "branch-pushed", { head: H }), ev(2, "human-requested", { kind: "approval", cause }), ev(3, "human-answered", { command: "approve", request: "e2" })];
+
+  test("an /approve of a Merge gate request counts, and still never merges past a failing gate core", () => {
+    const events = asked("autonomy");
+    expect(approvedAtMergeGate(events)).toBe(true);
+    const failing = evaluateMergeGate(good({ evidence: [] }));
+    expect(decideMerge({ autonomy: "off", gate: failing, risks: [], approved: approvedAtMergeGate(events) }).action).not.toBe("merge");
+    expect(decideMerge({ autonomy: "off", gate: evaluateMergeGate(good()), risks: [], approved: approvedAtMergeGate(events) }).action).toBe("merge");
+  });
+
+  test("an /approve of something else, or of a head since pushed over, doesn't count", () => {
+    expect(approvedAtMergeGate(asked("run-error"))).toBe(false);
+    expect(approvedAtMergeGate([...asked("risk-rule"), ev(4, "branch-pushed", { head: "newer" })])).toBe(false);
+    expect(approvedAtMergeGate([ev(2, "human-requested", { kind: "approval", cause: "risk-rule" }), ev(3, "human-answered", { command: "reject", request: "e2" })])).toBe(false);
   });
 });

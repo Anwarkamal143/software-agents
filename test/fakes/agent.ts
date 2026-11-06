@@ -12,13 +12,15 @@ export const facts = (over: Partial<MeasuredFacts> = {}): MeasuredFacts => ({
   ...over,
 });
 
-export const pass = (summary = "Done.", over: Partial<MeasuredFacts> = {}): AgentRunOutcome => ({
+type Output = Extract<AgentRunOutcome, { kind: "output" }>;
+
+export const pass = (summary = "Done.", over: Partial<MeasuredFacts> = {}): Output => ({
   kind: "output",
   output: { verdict: "pass", summary, findings: [], artifacts: [] },
   facts: facts(over),
 });
 
-export const fail = (summary: string, findings: Finding[]): AgentRunOutcome => ({
+export const fail = (summary: string, findings: Finding[]): Output => ({
   kind: "output",
   output: { verdict: "fail", summary, findings, artifacts: [] },
   facts: facts(),
@@ -56,9 +58,17 @@ export class ScriptedAgent implements AgentAdapter {
   }
 }
 
+/** A needs-human Verdict asking `text`, from agent session `session_id`. */
+export const asks = (text: string, options: string[], session_id = "session-1"): Output => ({
+  kind: "output",
+  output: { verdict: "needs-human", summary: "Needs a human.", findings: [], artifacts: [], question: { text, options } },
+  facts: facts(),
+  session_id,
+});
+
 /** A build that commits what the verify command looks for, in its own Working copy. */
 let builds = 0;
-export const building = (req: AgentRunRequest, files: Record<string, string> = {}): AgentRunOutcome => {
+export const building = (req: AgentRunRequest, files: Record<string, string> = {}): Output => {
   writeIn(req.workingCopy.dir, "built.txt", `build ${++builds}\n`);
   for (const [path, content] of Object.entries(files)) writeIn(req.workingCopy.dir, path, content);
   commitAll(req.workingCopy.dir, "Build");
