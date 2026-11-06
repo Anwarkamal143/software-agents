@@ -11,6 +11,8 @@ export interface CheckRun {
 export interface CheckRequest {
   commands: string[];
   cwd: string;
+  /** Added to a minimal environment (PATH only); nothing else of the Orchestrator's leaks in. */
+  env?: Record<string, string>;
   /** Per command. Default 30 minutes, the default Stage-run Budget. */
   timeoutMs?: number;
   signal?: AbortSignal;
@@ -26,11 +28,11 @@ export interface CheckRunner {
  * Not sandboxed: Check Stages under sandbox-runtime come in #29.
  */
 export class ShellCheckRunner implements CheckRunner {
-  async run({ commands, cwd, timeoutMs = 30 * 60_000, signal }: CheckRequest): Promise<CheckRun> {
+  async run({ commands, cwd, env = {}, timeoutMs = 30 * 60_000, signal }: CheckRequest): Promise<CheckRun> {
     let output = "";
     for (const command of commands) {
       output += `$ ${command}\n`;
-      const { code, timedOut, text } = await runOne(command, cwd, timeoutMs, signal);
+      const { code, timedOut, text } = await runOne(command, cwd, { PATH: process.env.PATH ?? "", ...env }, timeoutMs, signal);
       output += text;
       if (code !== 0) {
         return { passed: false, failed: { command, exit_code: code, ...(timedOut && { timed_out: true }) }, output };
@@ -40,9 +42,9 @@ export class ShellCheckRunner implements CheckRunner {
   }
 }
 
-function runOne(command: string, cwd: string, timeoutMs: number, signal?: AbortSignal) {
+function runOne(command: string, cwd: string, env: Record<string, string>, timeoutMs: number, signal?: AbortSignal) {
   return new Promise<{ code: number | null; timedOut: boolean; text: string }>((resolve, reject) => {
-    const child = spawn("sh", ["-c", command], { cwd, stdio: ["ignore", "pipe", "pipe"], detached: true, signal });
+    const child = spawn("sh", ["-c", command], { cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true, signal });
     let text = "";
     let timedOut = false;
     child.stdout.on("data", (b: Buffer) => (text += b.toString()));

@@ -1,8 +1,10 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ConfigHolder } from "../../src/config/holder.js";
 import { EventLog } from "../../src/jobs/event-log.js";
 import { Orchestrator } from "../../src/orchestrator/orchestrator.js";
+import { PrePushChecks } from "../../src/repos/prepush.js";
+import { Clones } from "../../src/repos/clones.js";
 import { ShellCheckRunner } from "../../src/stages/check-runner.js";
 import { ArtifactStore } from "../../src/store/artifact-store.js";
 import { openSqliteJobStore } from "../../src/store/sqlite-job-store.js";
@@ -10,14 +12,16 @@ import { ScriptedAgent } from "../fakes/agent.js";
 import { FakeMirror } from "../fakes/mirror.js";
 import { FakeSource } from "../fakes/source.js";
 import { fixture } from "./config.js";
+import { makeRemote } from "./git.js";
+import { gitleaksPath } from "./gitleaks.js";
 import { tmpHome } from "./tmp.js";
 
 /** A whole Factory on fakes: real Event log, config and Check Stages; scripted agent, fake Source and Mirror. */
 export function fakeFactory(agent = new ScriptedAgent(), configText = fixture("e2e.yaml")) {
   const home = tmpHome();
   writeFileSync(join(home, "factory.yaml"), configText);
-  const workdir = join(home, "work");
-  mkdirSync(workdir);
+  const remote = makeRemote(join(home, "github"));
+  const clones = new Clones(home, { remoteUrl: () => remote });
   const source = new FakeSource();
   const mirror = new FakeMirror();
   const log = new EventLog(openSqliteJobStore(join(home, "factory.db")));
@@ -29,8 +33,8 @@ export function fakeFactory(agent = new ScriptedAgent(), configText = fixture("e
     checks: new ShellCheckRunner(),
     mirrors: [mirror],
     artifacts: new ArtifactStore(home),
-    workdir: () => workdir,
-    conventions: () => "Use pnpm.",
+    clones,
+    prePush: new PrePushChecks(home, { gitleaks: gitleaksPath() }),
   });
   /** Event types for one Job, in order. */
   const types = (job_id: string) => log.store.read().filter((e) => e.job_id === job_id).map((e) => e.type);
@@ -39,5 +43,5 @@ export function fakeFactory(agent = new ScriptedAgent(), configText = fixture("e
     if (!job || rest.length) throw new Error(`expected one Job, found ${log.jobs().length}`);
     return job;
   };
-  return { home, workdir, source, mirror, log, agent, orchestrator, types, onlyJob };
+  return { home, remote, clones, source, mirror, log, agent, orchestrator, types, onlyJob };
 }

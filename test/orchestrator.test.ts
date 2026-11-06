@@ -2,19 +2,16 @@ import { describe, expect, test } from "vitest";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { approved } from "./fakes/source.js";
-import { fail, finding, pass, ScriptedAgent } from "./fakes/agent.js";
+import { building, fail, finding, pass, ScriptedAgent } from "./fakes/agent.js";
 import { fakeFactory } from "./helpers/factory.js";
 import { fixture } from "./helpers/config.js";
-
-/** A build that makes verify pass. */
-const building = (workdir: () => string) => () => (writeFileSync(join(workdir(), "built.txt"), "ok"), pass("Built it."));
+import { agentGit } from "./helpers/git.js";
 
 describe("Orchestrator: one Job end to end", () => {
   test("a Job runs triage → build → verify → review → security and reaches the Merge gate checkpoint", async () => {
     const f = fakeFactory(
       new ScriptedAgent({
-        // The build "writes" what the verify command looks for.
-        build: [() => (writeFileSync(join(f.workdir, "built.txt"), "ok"), pass("Built it.", { files_changed: ["src/app.ts"] }))],
+        build: [building],
       }),
     );
     f.source.push(approved(7));
@@ -26,7 +23,7 @@ describe("Orchestrator: one Job end to end", () => {
       "job-approved",
       "attempt-started",
       "stage-started", "stage-passed", // triage
-      "stage-started", "stage-passed", // build
+      "stage-started", "branch-pushed", "stage-passed", // build
       "stage-started", "stage-passed", // verify
       "stage-started", "stage-passed", // review
       "stage-started", "stage-passed", // security
@@ -37,7 +34,7 @@ describe("Orchestrator: one Job end to end", () => {
 
     const events = f.log.store.read();
     expect(events.at(-1)).toMatchObject({ type: "checkpoint-evaluated", actor: "orchestrator", data: { checkpoint: "merge-gate" } });
-    expect(events.find((e) => e.type === "attempt-started")?.data).toEqual({ branch: "factory/7" });
+    expect(events.find((e) => e.type === "attempt-started")?.data).toEqual({ branch: "factory/7", base: agentGit(f.remote, "rev-parse", "main") });
 
     // Every write reached the Mirror, in order, with the Job state after it.
     expect(f.mirror.writes.map((w) => w.event.id)).toEqual(events.map((e) => e.id));
@@ -50,14 +47,12 @@ describe("Orchestrator: one Job end to end", () => {
   });
 
   test("a review fail Bounces to build, with the findings in build's next brief", async () => {
-    let workdir = "";
     const f = fakeFactory(
       new ScriptedAgent({
-        build: [building(() => workdir), building(() => workdir)],
+        build: [building, building],
         review: [fail("Missing test.", [finding("missing-test:health", "No test covers /health.")])],
       }),
     );
-    workdir = f.workdir;
     f.source.push(approved(7));
 
     await f.orchestrator.runUntilIdle();
@@ -80,14 +75,12 @@ describe("Orchestrator: one Job end to end", () => {
   });
 
   test("with bounce_cap 3, three Bounces happen and the fourth fail sends the Job to waiting", async () => {
-    let workdir = "";
     const f = fakeFactory(
       new ScriptedAgent({
-        build: Array.from({ length: 4 }, () => building(() => workdir)),
+        build: Array.from({ length: 4 }, () => building),
         review: [1, 2, 3, 4].map((n) => fail(`Round ${n}.`, [finding(`problem-${n}`)])),
       }),
     );
-    workdir = f.workdir;
     f.source.push(approved(7));
 
     await f.orchestrator.runUntilIdle();
@@ -103,14 +96,12 @@ describe("Orchestrator: one Job end to end", () => {
   });
 
   test("the same root-cause key twice stops Bouncing early", async () => {
-    let workdir = "";
     const f = fakeFactory(
       new ScriptedAgent({
-        build: [building(() => workdir), building(() => workdir)],
+        build: [building, building],
         review: [fail("Missing test.", [finding("missing-test:health")]), fail("Still missing.", [finding("missing-test:health")])],
       }),
     );
-    workdir = f.workdir;
     f.source.push(approved(7));
 
     await f.orchestrator.runUntilIdle();
@@ -124,10 +115,8 @@ describe("Orchestrator: one Job end to end", () => {
   });
 
   test("a failing Check Stage Bounces to its on_fail Stage with the failing command as the finding", async () => {
-    let workdir = "";
     // The first build forgets to write built.txt, so verify fails; the second gets it right.
-    const f = fakeFactory(new ScriptedAgent({ build: [pass("Built, honest."), building(() => workdir)] }));
-    workdir = f.workdir;
+    const f = fakeFactory(new ScriptedAgent({ build: [pass("Built, honest."), building] }));
     f.source.push(approved(7));
 
     await f.orchestrator.runUntilIdle();
@@ -140,9 +129,7 @@ describe("Orchestrator: one Job end to end", () => {
   });
 
   test("a when condition skips a Stage, and the skip is recorded", async () => {
-    let workdir = "";
-    const f = fakeFactory(new ScriptedAgent({ build: [building(() => workdir)] }));
-    workdir = f.workdir;
+    const f = fakeFactory(new ScriptedAgent({ build: [building] }));
     f.source.push(approved(7, ["pipeline:ui"]));
 
     await f.orchestrator.runUntilIdle();
@@ -161,11 +148,9 @@ describe("Orchestrator: one Job end to end", () => {
   });
 
   test("a when condition runs the Stage when the Attempt changed a matching path", async () => {
-    let workdir = "";
     const f = fakeFactory(
-      new ScriptedAgent({ build: [() => (writeFileSync(join(workdir, "built.txt"), "ok"), pass("Built.", { files_changed: ["src/ui/Button.tsx"] }))] }),
+      new ScriptedAgent({ build: [(req) => building(req, { "src/ui/Button.tsx": "export const Button = 1;\n" })] }),
     );
-    workdir = f.workdir;
     f.source.push(approved(7, ["pipeline:ui"]));
 
     await f.orchestrator.runUntilIdle();
@@ -213,14 +198,12 @@ describe("Orchestrator: one Job end to end", () => {
   });
 
   test("every transition in the run names its cause: the event that triggered it", async () => {
-    let workdir = "";
     const f = fakeFactory(
       new ScriptedAgent({
-        build: [building(() => workdir), building(() => workdir)],
+        build: [building, building],
         review: [fail("Missing test.", [finding("missing-test")])],
       }),
     );
-    workdir = f.workdir;
     f.source.push(approved(7));
 
     await f.orchestrator.runUntilIdle();
@@ -234,6 +217,7 @@ describe("Orchestrator: one Job end to end", () => {
       ["stage-started", "attempt-started"],
       ["stage-passed", "stage-started"],
       ["stage-started", "stage-passed"],
+      ["branch-pushed", "stage-started"],
       ["stage-passed", "stage-started"],
       ["stage-started", "stage-passed"],
       ["stage-passed", "stage-started"],
@@ -241,6 +225,7 @@ describe("Orchestrator: one Job end to end", () => {
       ["stage-failed", "stage-started"],
       ["bounced", "stage-failed"],
       ["stage-started", "bounced"],
+      ["branch-pushed", "stage-started"],
       ["stage-passed", "stage-started"],
       ["stage-started", "stage-passed"],
       ["stage-passed", "stage-started"],
@@ -253,7 +238,6 @@ describe("Orchestrator: one Job end to end", () => {
   });
 
   test("an edit to factory.yaml applies at the next Stage run, which records the config it used", async () => {
-    let workdir = "";
     const f = fakeFactory(
       new ScriptedAgent({
         triage: [
@@ -263,10 +247,9 @@ describe("Orchestrator: one Job end to end", () => {
             return pass("Triaged.");
           },
         ],
-        build: [building(() => workdir)],
+        build: [building],
       }),
     );
-    workdir = f.workdir;
     f.source.push(approved(7));
 
     await f.orchestrator.runUntilIdle();

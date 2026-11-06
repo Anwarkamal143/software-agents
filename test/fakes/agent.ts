@@ -1,5 +1,6 @@
 import type { AgentAdapter, AgentRunOutcome, AgentRunRequest, MeasuredFacts } from "../../src/agents/adapter.js";
 import type { Finding } from "../../src/stages/result.js";
+import { commitAll, writeIn } from "../helpers/git.js";
 
 export const facts = (over: Partial<MeasuredFacts> = {}): MeasuredFacts => ({
   cost_usd: 0.1,
@@ -30,7 +31,7 @@ export const finding = (root_cause: string, message = `Problem ${root_cause}`): 
   root_cause,
 });
 
-type Step = AgentRunOutcome | ((req: AgentRunRequest) => AgentRunOutcome);
+type Step = AgentRunOutcome | ((req: AgentRunRequest) => AgentRunOutcome | Promise<AgentRunOutcome>);
 
 /**
  * An Agent adapter that returns scripted outcomes per Stage, in order, and
@@ -54,3 +55,12 @@ export class ScriptedAgent implements AgentAdapter {
     return this.requests.map((r) => r.brief.stage);
   }
 }
+
+/** A build that commits what the verify command looks for, in its own Working copy. */
+let builds = 0;
+export const building = (req: AgentRunRequest, files: Record<string, string> = {}): AgentRunOutcome => {
+  writeIn(req.workingCopy.dir, "built.txt", `build ${++builds}\n`);
+  for (const [path, content] of Object.entries(files)) writeIn(req.workingCopy.dir, path, content);
+  commitAll(req.workingCopy.dir, "Build");
+  return pass("Built it.");
+};

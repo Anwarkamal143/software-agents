@@ -18,7 +18,8 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "test": "vitest run"
+    "test": "vitest run",
+    "fetch:gitleaks": "node scripts/fetch-gitleaks.mjs"
   },
   "repository": {
     "type": "git",
