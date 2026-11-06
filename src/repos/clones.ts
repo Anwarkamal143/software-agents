@@ -1,10 +1,11 @@
-import { existsSync, lstatSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Git, HARDENED_UPLOAD_PACK } from "./git.js";
 
 /** An Attempt's own clone of the Target repo: the only place its agents may write (ADR 0008). */
 export interface WorkingCopy {
-  repo: string;
+  /** The clone itself: where the Attempt's agents work. */
+  path: string;
   job_id: string;
   attempt: number;
   branch: string;
@@ -14,8 +15,8 @@ export interface WorkingCopy {
   base: string;
   /** The Attempt's own HOME, config, caches and temp folder; Stage runs get these instead of yours. */
   env: { HOME: string; XDG_CONFIG_HOME: string; XDG_CACHE_HOME: string; npm_config_cache: string; TMPDIR: string };
-  /** The Attempt's folder, holding `repo`, its HOME, caches and the quarantine. */
-  dir: string;
+  /** The Attempt's folder, holding the clone, its HOME, caches and the quarantine. */
+  attemptDir: string;
 }
 
 /** What an agent left in its Working copy, fetched into quarantine, not yet trusted. */
@@ -35,7 +36,7 @@ export interface StartAttempt {
   branch: string;
 }
 
-export interface RepoWorkspaceOptions {
+export interface ClonesOptions {
   /** Where the Trusted clone fetches from and pushes to. */
   remoteUrl: (repo: string) => string;
 }
@@ -45,19 +46,32 @@ export interface RepoWorkspaceOptions {
  * runs git inside a Working copy: it fetches out of one into quarantine, checks
  * there, and moves only what passes into the Trusted clone (ADR 0008).
  */
-export class RepoWorkspace {
+export class Clones {
   private readonly git: Git;
+  /** One git writer at a time per Trusted clone, so parallel Stage runs don't fight over ref locks. */
+  private readonly locks = new Map<string, Promise<unknown>>();
 
   constructor(
     private readonly home: string,
-    private readonly options: RepoWorkspaceOptions,
+    private readonly options: ClonesOptions,
   ) {
     this.git = new Git(join(home, "git-home"));
+  }
+
+  private exclusive<T>(trustedClone: string, work: () => Promise<T>): Promise<T> {
+    const previous = this.locks.get(trustedClone) ?? Promise.resolve();
+    const next = previous.then(work, work);
+    this.locks.set(trustedClone, next.catch(() => undefined));
+    return next;
   }
 
   /** The Trusted clone of `repo`, made on first use. Agents never touch it. */
   async trustedClone(repo: string): Promise<{ dir: string; defaultBranch: string }> {
     const dir = join(this.home, "repos", `${repo}.git`);
+    return this.exclusive(dir, () => this.ensureTrustedClone(repo, dir));
+  }
+
+  private async ensureTrustedClone(repo: string, dir: string): Promise<{ dir: string; defaultBranch: string }> {
     if (!existsSync(join(dir, "HEAD"))) {
       mkdirSync(join(dir, ".."), { recursive: true });
       await this.git.run(["clone", "--quiet", "--bare", "--template=", this.options.remoteUrl(repo), dir], { cwd: this.home });
@@ -70,16 +84,19 @@ export class RepoWorkspace {
   /** A fresh Working copy for a new Attempt, on its own branch from the current default branch. */
   async startAttempt({ repo, job_id, attempt, branch }: StartAttempt): Promise<WorkingCopy> {
     const trusted = await this.trustedClone(repo);
-    await this.git.run(["fetch", "--quiet", "--prune", "--no-tags", "origin"], { cwd: trusted.dir });
-    const base = (await this.git.run(["rev-parse", `refs/remotes/origin/${trusted.defaultBranch}^{commit}`], { cwd: trusted.dir })).trim();
-    await this.git.run(["update-ref", `refs/heads/${branch}`, base], { cwd: trusted.dir });
+    const base = await this.exclusive(trusted.dir, async () => {
+      await this.git.run(["fetch", "--quiet", "--prune", "--no-tags", "origin"], { cwd: trusted.dir });
+      const sha = (await this.git.run(["rev-parse", `refs/remotes/origin/${trusted.defaultBranch}^{commit}`], { cwd: trusted.dir })).trim();
+      await this.git.run(["update-ref", `refs/heads/${branch}`, sha], { cwd: trusted.dir });
+      return sha;
+    });
 
     const wc = this.workingCopy({ repo, job_id, attempt, branch, base });
-    rmSync(wc.dir, { recursive: true, force: true });
+    rmSync(wc.attemptDir, { recursive: true, force: true });
     for (const d of Object.values(wc.env)) mkdirSync(d, { recursive: true });
     await this.git.run(
-      ["clone", "--quiet", "--reference", trusted.dir, "--single-branch", "--branch", branch, "--no-tags", "--template=", trusted.dir, wc.repo],
-      { cwd: wc.dir },
+      ["clone", "--quiet", "--reference", trusted.dir, "--single-branch", "--branch", branch, "--no-tags", "--template=", trusted.dir, wc.path],
+      { cwd: wc.attemptDir },
     );
     return wc;
   }
@@ -88,13 +105,13 @@ export class RepoWorkspace {
   workingCopy({ repo, job_id, attempt, branch, base }: StartAttempt & { base: string }): WorkingCopy {
     const dir = join(this.home, "work", job_id, `a${attempt}`);
     return {
-      repo: join(dir, "repo"),
+      path: join(dir, "repo"),
       job_id,
       attempt,
       branch,
       trustedClone: join(this.home, "repos", `${repo}.git`),
       base,
-      dir,
+      attemptDir: dir,
       env: {
         HOME: join(dir, "home"),
         XDG_CONFIG_HOME: join(dir, "home", ".config"),
@@ -123,13 +140,12 @@ export class RepoWorkspace {
 
   /** Fetches every branch and tag out of the Working copy into a fresh quarantine. */
   async receive(wc: WorkingCopy): Promise<Incoming> {
-    const gitDir = join(wc.repo, ".git");
-    // A gitfile or symlink here could point the fetch at another Job's repo.
-    if (!lstatSync(gitDir, { throwIfNoEntry: false })?.isDirectory()) throw new Error(`${gitDir} is not a directory; refusing to fetch from it.`);
+    const gitDir = join(wc.path, ".git");
+    assertOwnGitDir(gitDir, join(wc.trustedClone, "objects"));
 
-    const quarantine = join(wc.dir, "incoming.git");
+    const quarantine = join(wc.attemptDir, "incoming.git");
     rmSync(quarantine, { recursive: true, force: true });
-    await this.git.run(["init", "--quiet", "--bare", "--template=", quarantine], { cwd: wc.dir });
+    await this.git.run(["init", "--quiet", "--bare", "--template=", quarantine], { cwd: wc.attemptDir });
     writeFileSync(join(quarantine, "objects", "info", "alternates"), `${join(wc.trustedClone, "objects")}\n`);
     await this.git.run(
       ["fetch", "--quiet", "--no-tags", "--no-write-fetch-head", `--upload-pack=${HARDENED_UPLOAD_PACK}`, gitDir, "+refs/heads/*:refs/incoming/heads/*", "+refs/tags/*:refs/incoming/tags/*"],
@@ -152,28 +168,61 @@ export class RepoWorkspace {
   async push(wc: WorkingCopy, incoming: Incoming, { remoteHead }: { remoteHead: string | null }): Promise<void> {
     if (!incoming.head) throw new Error(`The Working copy has no ${wc.branch} branch to push.`);
     const ref = `refs/heads/${wc.branch}`;
-    await this.git.run(["fetch", "--quiet", "--no-tags", "--no-write-fetch-head", incoming.quarantine, `+refs/incoming/heads/${wc.branch}:${ref}`], {
-      cwd: wc.trustedClone,
+    await this.exclusive(wc.trustedClone, async () => {
+      await this.git.run(
+        ["fetch", "--quiet", "--no-tags", "--no-write-fetch-head", `--upload-pack=${HARDENED_UPLOAD_PACK}`, incoming.quarantine, `+refs/incoming/heads/${wc.branch}:${ref}`],
+        { cwd: wc.trustedClone },
+      );
+      await this.git.run(["push", "--quiet", "--no-verify", `--force-with-lease=${ref}:${remoteHead ?? ""}`, "origin", `${ref}:${ref}`], { cwd: wc.trustedClone });
     });
-    await this.git.run(["push", "--quiet", "--no-verify", `--force-with-lease=${ref}:${remoteHead ?? ""}`, "origin", `${ref}:${ref}`], { cwd: wc.trustedClone });
   }
 
   /** A clean checkout of exactly `commit`, for a Check Stage run. Delete it with `removeCheckout`. */
-  async checkout(wc: WorkingCopy, commit: string, name: string): Promise<string> {
-    const dir = join(wc.dir, "checks", name);
+  async checkStageCopy(wc: WorkingCopy, commit: string, name: string): Promise<string> {
+    const dir = join(wc.attemptDir, "checks", name);
     rmSync(dir, { recursive: true, force: true });
     mkdirSync(join(dir, ".."), { recursive: true });
-    await this.git.run(["clone", "--quiet", "--no-checkout", "--reference", wc.trustedClone, "--no-tags", "--template=", wc.trustedClone, dir], { cwd: wc.dir });
+    await this.git.run(["clone", "--quiet", "--no-checkout", "--reference", wc.trustedClone, "--no-tags", "--template=", wc.trustedClone, dir], { cwd: wc.attemptDir });
     await this.git.run(["checkout", "--quiet", "--detach", commit], { cwd: dir });
     return dir;
   }
 
-  removeCheckout(dir: string): void {
+  removeCheckStageCopy(dir: string): void {
     rmSync(dir, { recursive: true, force: true });
   }
 
   /** Deletes every Working copy of a Job: on merged or cancelled (ADR 0008). */
   async removeJob(job_id: string): Promise<void> {
     rmSync(join(this.home, "work", job_id), { recursive: true, force: true });
+  }
+}
+
+/**
+ * The Orchestrator's fetch runs outside the Sandbox, so before it reads a Working
+ * copy's `.git` that `.git` must hold only its own repo: no gitfile, no `commondir`,
+ * no symlinks anywhere inside, and no alternates beyond the Trusted clone it was
+ * cloned with. Otherwise the fetch could be pointed at another Job's or another
+ * Target repo's objects and push them here.
+ */
+function assertOwnGitDir(gitDir: string, trustedObjects: string): void {
+  const refuse = (why: string): never => {
+    throw new Error(`${gitDir} ${why}; refusing to fetch from it.`);
+  };
+  if (!lstatSync(gitDir, { throwIfNoEntry: false })?.isDirectory()) refuse("is not a directory");
+  for (const name of ["commondir", "gitdir", join("objects", "info", "http-alternates")]) {
+    if (lstatSync(join(gitDir, name), { throwIfNoEntry: false })) refuse(`has ${name}`);
+  }
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.isSymbolicLink()) refuse(`contains a symlink (${join(dir, entry.name)})`);
+      if (entry.isDirectory()) walk(join(dir, entry.name));
+    }
+  };
+  walk(gitDir);
+  const alternates = join(gitDir, "objects", "info", "alternates");
+  if (existsSync(alternates)) {
+    const lines = readFileSync(alternates, "utf8").split("\n").map((l) => l.trim()).filter(Boolean);
+    const real = (p: string) => (existsSync(p) ? realpathSync(p) : p);
+    if (lines.some((l) => real(l) !== real(trustedObjects))) refuse("borrows objects from somewhere other than its Trusted clone");
   }
 }

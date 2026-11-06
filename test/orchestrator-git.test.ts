@@ -139,7 +139,7 @@ describe("Orchestrator with Trusted clones and Working copies", () => {
     // X is approved first and is queued; Y is approved later, asked a question, and answered.
     const admit = async (job_id: string, issue: number) => {
       f.log.record({ type: "job-approved", job_id, actor: "human:alice", data: { repo: "acme/web-app", issue, title: `Issue ${issue}`, body: "", labels: [] } });
-      const wc = await f.workspace.startAttempt({ repo: "acme/web-app", job_id, attempt: 1, branch: `factory/${issue}` });
+      const wc = await f.clones.startAttempt({ repo: "acme/web-app", job_id, attempt: 1, branch: `factory/${issue}` });
       f.log.record({ type: "attempt-started", job_id, attempt: 1, actor: "orchestrator", data: { branch: wc.branch, base: wc.base } });
     };
     await admit("job-x", 1);
@@ -168,5 +168,27 @@ describe("Orchestrator with Trusted clones and Working copies", () => {
     f.source.push({ kind: "unapproved", repo: "acme/web-app", issue: 7, by: "alice" });
     await f.orchestrator.runUntilIdle();
     expect(existsSync(dir)).toBe(false);
+  });
+
+  test("one Stage run throwing doesn't abandon the others still running", async () => {
+    const { gate, release } = deferred();
+    let otherFinished = false;
+    const f = fakeFactory(
+      new ScriptedAgent({
+        triage: [
+          async () => {
+            throw new Error("adapter blew up");
+          },
+          async () => (await gate, (otherFinished = true), pass()),
+        ],
+      }),
+      withMaxRunning(2),
+    );
+    f.source.push(approved(1), approved(2));
+
+    const done = f.orchestrator.runUntilIdle();
+    setTimeout(release, 300);
+    await expect(done).rejects.toThrow("adapter blew up");
+    expect(otherFinished).toBe(true);
   });
 });

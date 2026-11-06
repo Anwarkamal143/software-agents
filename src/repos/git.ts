@@ -27,7 +27,6 @@ export const HARDENED_UPLOAD_PACK = `git ${HARDENING.join(" ")} upload-pack`;
 
 export interface GitOptions {
   cwd: string;
-  input?: string;
 }
 
 /** Runs git as the Orchestrator: hardened, with no system or global config and an empty HOME. */

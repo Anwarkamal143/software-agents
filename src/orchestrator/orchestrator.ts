@@ -9,7 +9,7 @@ import type { EventLog } from "../jobs/event-log.js";
 import type { JobState } from "../jobs/projection.js";
 import type { Mirror } from "../mirror/mirror.js";
 import type { PrePushChecks } from "../repos/prepush.js";
-import type { RepoWorkspace, WorkingCopy } from "../repos/workspace.js";
+import type { Clones, WorkingCopy } from "../repos/clones.js";
 import type { Source, SourceItem } from "../source/source.js";
 import { renderBrief, type StageBrief } from "../stages/brief.js";
 import type { CheckRunner } from "../stages/check-runner.js";
@@ -26,7 +26,7 @@ export interface OrchestratorDeps {
   mirrors: Mirror[];
   artifacts: ArtifactStore;
   /** Trusted clones and Working copies (ADR 0008). */
-  workspace: RepoWorkspace;
+  clones: Clones;
   prePush: PrePushChecks;
 }
 
@@ -74,9 +74,13 @@ export class Orchestrator {
   async runUntilIdle(): Promise<void> {
     await this.poll();
     const running = new Map<string, { repo: string; done: Promise<void> }>();
+    // A Stage run that throws is a fault for #27 to classify; until then, let the others
+    // finish rather than abandon them mid-run, and rethrow once nothing is running.
+    const faults: unknown[] = [];
     for (;;) {
       let moved = false;
-      for (const job of this.queue(running)) {
+      // After a fault, start nothing new; only let what's running finish.
+      for (const job of faults.length ? [] : this.queue(running)) {
         const plan = await this.plan(job);
         if (!plan) continue;
         if (plan.kind === "instant") {
@@ -86,12 +90,18 @@ export class Orchestrator {
         }
         const inRepo = [...running.values()].filter((r) => r.repo === job.repo).length;
         if (running.size >= this.deps.config.current.max_running || inRepo >= plan.repoLimit) continue;
-        const done = plan.run().finally(() => running.delete(job.job_id));
+        const done = plan
+          .run()
+          .catch((err: unknown) => void faults.push(err))
+          .finally(() => running.delete(job.job_id));
         running.set(job.job_id, { repo: job.repo, done });
         moved = true;
       }
       if (moved) continue;
-      if (!running.size) return;
+      if (!running.size) {
+        if (faults.length) throw faults[0];
+        return;
+      }
       await Promise.race([...running.values()].map((r) => r.done));
     }
   }
@@ -114,7 +124,7 @@ export class Orchestrator {
     if (item.kind === "unapproved") {
       if (live) {
         await this.record({ type: "job-cancelled", job_id: live.job_id, actor: `human:${item.by}`, data: { reason: "ready label removed" } });
-        await this.deps.workspace.removeJob(live.job_id);
+        await this.deps.clones.removeJob(live.job_id);
       }
       return;
     }
@@ -127,7 +137,7 @@ export class Orchestrator {
       data: { repo: item.repo, issue: item.issue.number, title: item.issue.title, body: item.issue.body, labels: item.labels },
     });
     const branch = attemptBranch(item.issue.number, 1);
-    const wc = await this.deps.workspace.startAttempt({ repo: item.repo, job_id, attempt: 1, branch });
+    const wc = await this.deps.clones.startAttempt({ repo: item.repo, job_id, attempt: 1, branch });
     await this.record({ type: "attempt-started", job_id, attempt: 1, actor: "orchestrator", caused_by: approval.id, data: { branch, base: wc.base } });
   }
 
@@ -160,7 +170,7 @@ export class Orchestrator {
     const resolution = resolve(this.deps.config.current, { repo: job.repo, labels: approval.labels });
     const attemptEvents = events.filter((e) => e.attempt === job.attempt);
     const started = attemptEvents.find((e) => e.type === "attempt-started")!;
-    const wc = this.deps.workspace.workingCopy({
+    const wc = this.deps.clones.workingCopy({
       repo: job.repo,
       job_id: job.job_id,
       attempt: job.attempt,
@@ -196,18 +206,18 @@ export class Orchestrator {
       repo: job.repo,
       issue: { number: job.issue, title: ctx.approval.title, body: ctx.approval.body },
       branch: wc.branch,
-      workingCopy: wc.repo,
+      workingCopy: wc.path,
       attempt: job.attempt,
       bounce: progress.bounces,
       earlier: progress.earlier,
-      conventions: await this.deps.workspace.conventions(wc),
+      conventions: await this.deps.clones.conventions(wc),
     };
     const outcome = await this.deps.agent.run({
       stage_run_id,
       brief,
       renderedBrief: renderBrief(brief),
       model: stage.model!,
-      workingCopy: { dir: wc.repo, env: wc.env },
+      workingCopy: { dir: wc.path, env: wc.env },
       budget: ctx.resolution.policies.budgets.stage_run,
       resultSchema: STAGE_RESULT_SCHEMA,
     });
@@ -228,7 +238,7 @@ export class Orchestrator {
   private async pushAgentWork(ctx: StepContext, stage: ResolvedStage, run: RunEnvelope): Promise<Pick<MeasuredFacts, "head" | "files_changed"> | null> {
     const { wc, progress } = ctx;
     const before = progress.pushedHead ?? wc.base;
-    const incoming = await this.deps.workspace.receive(wc);
+    const incoming = await this.deps.clones.receive(wc);
     const failures = await this.deps.prePush.run(wc, incoming, { before, profile: stage.tools! });
     if (failures.length) {
       const failed = await this.record({ ...run, type: "prepush-failed", data: { check: failures[0]!.check, failures } });
@@ -237,8 +247,8 @@ export class Orchestrator {
     }
     const head = incoming.head!;
     if (head === before) return { head, files_changed: [] };
-    const files_changed = await this.deps.workspace.filesChanged(incoming, before, head);
-    await this.deps.workspace.push(wc, incoming, { remoteHead: progress.pushedHead });
+    const files_changed = await this.deps.clones.filesChanged(incoming, before, head);
+    await this.deps.clones.push(wc, incoming, { remoteHead: progress.pushedHead });
     await this.record({ ...run, actor: "orchestrator", type: "branch-pushed", data: { branch: wc.branch, before, head } });
     return { head, files_changed };
   }
@@ -247,12 +257,12 @@ export class Orchestrator {
   private async runCheck(ctx: StepContext, stage: ResolvedStage, stage_run_id: string): Promise<StageOutcome> {
     const head = ctx.progress.pushedHead ?? ctx.wc.base;
     const startedAt = Date.now();
-    const dir = await this.deps.workspace.checkout(ctx.wc, head, stage_run_id);
+    const dir = await this.deps.clones.checkStageCopy(ctx.wc, head, stage_run_id);
     let run;
     try {
       run = await this.deps.checks.run({ commands: stage.commands!, cwd: dir, env: ctx.wc.env });
     } finally {
-      this.deps.workspace.removeCheckout(dir);
+      this.deps.clones.removeCheckStageCopy(dir);
     }
     const output = this.deps.artifacts.put(run.output);
     const facts = { cost_usd: 0, duration_ms: Date.now() - startedAt, head };

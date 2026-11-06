@@ -4,7 +4,7 @@ import { ConfigHolder } from "../../src/config/holder.js";
 import { EventLog } from "../../src/jobs/event-log.js";
 import { Orchestrator } from "../../src/orchestrator/orchestrator.js";
 import { PrePushChecks } from "../../src/repos/prepush.js";
-import { RepoWorkspace } from "../../src/repos/workspace.js";
+import { Clones } from "../../src/repos/clones.js";
 import { ShellCheckRunner } from "../../src/stages/check-runner.js";
 import { ArtifactStore } from "../../src/store/artifact-store.js";
 import { openSqliteJobStore } from "../../src/store/sqlite-job-store.js";
@@ -21,7 +21,7 @@ export function fakeFactory(agent = new ScriptedAgent(), configText = fixture("e
   const home = tmpHome();
   writeFileSync(join(home, "factory.yaml"), configText);
   const remote = makeRemote(join(home, "github"));
-  const workspace = new RepoWorkspace(home, { remoteUrl: () => remote });
+  const clones = new Clones(home, { remoteUrl: () => remote });
   const source = new FakeSource();
   const mirror = new FakeMirror();
   const log = new EventLog(openSqliteJobStore(join(home, "factory.db")));
@@ -33,7 +33,7 @@ export function fakeFactory(agent = new ScriptedAgent(), configText = fixture("e
     checks: new ShellCheckRunner(),
     mirrors: [mirror],
     artifacts: new ArtifactStore(home),
-    workspace,
+    clones,
     prePush: new PrePushChecks(home, { gitleaks: gitleaksPath() }),
   });
   /** Event types for one Job, in order. */
@@ -43,5 +43,5 @@ export function fakeFactory(agent = new ScriptedAgent(), configText = fixture("e
     if (!job || rest.length) throw new Error(`expected one Job, found ${log.jobs().length}`);
     return job;
   };
-  return { home, remote, workspace, source, mirror, log, agent, orchestrator, types, onlyJob };
+  return { home, remote, clones, source, mirror, log, agent, orchestrator, types, onlyJob };
 }
