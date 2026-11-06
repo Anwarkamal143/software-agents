@@ -179,7 +179,8 @@ export const srtSandbox: Sandbox = {
           await new Promise((r) => setTimeout(r, VIOLATION_SETTLE_MS));
           return SandboxManager.getSandboxViolationStore()
             .getViolationsForCommand(commandId)
-            .map((v) => v.line);
+            .map((v) => v.line)
+            .filter((line) => !writeThisCommandMayMake(line, policy.readWrite));
         },
       };
     } catch (err) {
@@ -194,6 +195,17 @@ export const srtSandbox: Sandbox = {
     await SandboxManager.reset();
   },
 };
+
+/**
+ * On Linux the violation monitor reports write attempts outside the allow list it was given at
+ * `initialize()`, not the one each command is wrapped with, so it reports writes this command's
+ * policy allowed and bubblewrap let through (`deny openat <path>`). Drop those; the reports are
+ * hints either way, and bubblewrap's mounts are what enforce.
+ */
+function writeThisCommandMayMake(line: string, readWrite: string[]): boolean {
+  const path = /^deny \S+ (\/.*)$/.exec(line)?.[1];
+  return path !== undefined && readWrite.some((dir) => path === dir || path.startsWith(`${dir}/`));
+}
 
 function runOne(command: string, cwd: string, env: Record<string, string>, timeoutMs: number, signal?: AbortSignal) {
   return new Promise<{ code: number | null; timedOut: boolean; text: string }>((resolve, reject) => {
