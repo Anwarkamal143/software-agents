@@ -70,6 +70,14 @@ _Avoid_: run, session (alone), execution
 A fresh start of a Job from the default branch, on its own branch. A retry after failure or a reset begins a new Attempt.
 _Avoid_: retry (as a noun), iteration
 
+**Working copy**:
+An Attempt's own clone of the Target repo, the only place its agents may write. The Orchestrator treats it as untrusted and never runs git inside it.
+_Avoid_: worktree, checkout, workspace
+
+**Trusted clone**:
+The Factory's own clone of a Target repo, which agents never touch. Every push, rebase and merge happens from it.
+_Avoid_: mirror (a Mirror is something else), cache, main checkout
+
 **Bounce**:
 Sending a Job back to an earlier Stage because a later Stage failed it, carrying that Stage's findings along.
 _Avoid_: rebuild, rework, rejection
