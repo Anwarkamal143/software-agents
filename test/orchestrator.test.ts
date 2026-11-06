@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { approved } from "./fakes/source.js";
 import { fail, finding, pass, ScriptedAgent } from "./fakes/agent.js";
 import { fakeFactory } from "./helpers/factory.js";
+import { fixture } from "./helpers/config.js";
 
 /** A build that makes verify pass. */
 const building = (workdir: () => string) => () => (writeFileSync(join(workdir(), "built.txt"), "ok"), pass("Built it."));
@@ -74,7 +75,7 @@ describe("Orchestrator: one Job end to end", () => {
       summary: "Missing test.",
       findings: [{ severity: "error", file: "src/app.ts", message: "No test covers /health.", root_cause: "missing-test:health" }],
     });
-    expect(secondBuild.prompt).toContain("No test covers /health. (root cause: missing-test:health)");
+    expect(secondBuild.renderedBrief).toContain("No test covers /health. (root cause: missing-test:health)");
     expect(f.onlyJob()).toMatchObject({ status: "queued", stage: "security" });
   });
 
@@ -307,5 +308,17 @@ describe("Orchestrator: one Job end to end", () => {
     await f.orchestrator.runUntilIdle();
     expect(f.onlyJob()).toMatchObject({ status: "cancelled", reason: "ready label removed" });
     expect(f.mirror.summary().at(-1)).toEqual(["job-cancelled", "cancelled", null]);
+  });
+
+  test("the same Check Stage command failing twice is a repeated root cause, even when its output differs", async () => {
+    const config = fixture("e2e.yaml").replace('verify: ["test -f built.txt"]', () => 'verify: ["echo pid $$; test -f built.txt"]');
+    const f = fakeFactory(new ScriptedAgent(), config);
+    f.source.push(approved(7));
+
+    await f.orchestrator.runUntilIdle();
+
+    expect(f.agent.stagesRun()).toEqual(["triage", "build", "build"]);
+    expect(f.log.store.read().filter((e) => e.type === "bounced")).toHaveLength(1);
+    expect(f.onlyJob()).toMatchObject({ status: "waiting", reason: "repeated-root-cause" });
   });
 });

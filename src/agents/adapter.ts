@@ -15,8 +15,8 @@ export interface MeasuredFacts {
 export interface AgentRunRequest {
   stage_run_id: string;
   brief: StageBrief;
-  /** The brief rendered for the session, issue text wrapped as untrusted. */
-  prompt: string;
+  /** The Stage brief rendered as text for the session, issue text wrapped as untrusted. */
+  renderedBrief: string;
   model: string;
   /** Hard limits for this Stage run. */
   budget: { usd: number; turns: number; minutes: number };

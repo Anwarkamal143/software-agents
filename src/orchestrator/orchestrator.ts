@@ -1,7 +1,6 @@
-import { createHash } from "node:crypto";
 import picomatch from "picomatch";
 import { ulid } from "ulid";
-import type { AgentAdapter, MeasuredFacts } from "../agents/adapter.js";
+import type { AgentAdapter, MeasuredFacts, RunErrorReason } from "../agents/adapter.js";
 import type { ConfigHolder } from "../config/holder.js";
 import { resolve, type Resolution, type ResolvedStage } from "../config/resolve.js";
 import type { FactoryEvent, NewEvent } from "../events/envelope.js";
@@ -38,7 +37,7 @@ interface Approval {
 
 type StageOutcome =
   | { kind: "result"; result: StageResult; facts: Partial<MeasuredFacts>; extra?: Record<string, unknown> }
-  | { kind: "error"; reason: string; message: string; facts: Partial<MeasuredFacts> };
+  | { kind: "error"; reason: RunErrorReason | "invalid-result"; message: string; facts: Partial<MeasuredFacts> };
 
 /**
  * Owns Job state, Stage order and every write (ADR 0001). Each step is decided
@@ -85,7 +84,7 @@ export class Orchestrator {
       attempt: 1,
       actor: "orchestrator",
       caused_by: approval.id,
-      data: { branch: `factory/${item.issue.number}` },
+      data: { branch: attemptBranch(item.issue.number, 1) },
     });
   }
 
@@ -102,7 +101,7 @@ export class Orchestrator {
     const reload = this.deps.config.refresh();
     if (reload.changed) await this.record({ type: "config-reloaded", actor: "orchestrator", data: { config_hash: this.deps.config.hash } });
 
-    const events = this.jobEvents(job);
+    const events = this.deps.log.eventsFor(job.job_id);
     const approval = approvalOf(events);
     const resolution = resolve(this.deps.config.current, { repo: job.repo, labels: approval.labels });
     const attemptEvents = events.filter((e) => e.attempt === job.attempt);
@@ -158,7 +157,7 @@ export class Orchestrator {
       tools: stage.tools!,
       repo: job.repo,
       issue: { number: job.issue, title: approval.title, body: approval.body },
-      branch: this.branch(job),
+      branch: attemptBranch(job.issue, job.attempt),
       attempt: job.attempt,
       bounce: progress.bounces,
       earlier: progress.earlier,
@@ -167,7 +166,7 @@ export class Orchestrator {
     const outcome = await this.deps.agent.run({
       stage_run_id,
       brief,
-      prompt: renderBrief(brief),
+      renderedBrief: renderBrief(brief),
       model: stage.model!,
       budget: resolution.policies.budgets.stage_run,
       resultSchema: STAGE_RESULT_SCHEMA,
@@ -190,15 +189,14 @@ export class Orchestrator {
       return { kind: "result", result: { verdict: "pass", summary, findings: [], artifacts: [] }, facts, extra: { output } };
     }
     const failed = run.failed!;
-    const how = failed.timed_out ? "timed out" : `exited ${failed.exit_code}`;
-    // The same command failing with the same output is the same root cause; different output is progress.
-    const digest = createHash("sha256").update(run.output).digest("hex").slice(0, 12);
+    const message = `\`${failed.command}\` ${failed.timed_out ? "timed out" : `exited ${failed.exit_code}`}.`;
     return {
       kind: "result",
       result: {
         verdict: "fail",
-        summary: `\`${failed.command}\` ${how}.`,
-        findings: [{ severity: "error", message: `\`${failed.command}\` ${how}.`, root_cause: `check:${stage.id}:${failed.command}:${digest}` }],
+        summary: message,
+        // The same command failing again is the same root cause: output carries timings, so it can't tell.
+        findings: [{ severity: "error", message, root_cause: `check:${stage.id}:${failed.command}` }],
         artifacts: [],
       },
       facts,
@@ -278,14 +276,11 @@ export class Orchestrator {
     return recorded;
   }
 
-  private jobEvents(job: JobState): FactoryEvent[] {
-    return this.deps.log.store.read().filter((e) => e.job_id === job.job_id);
-  }
 
-  private branch(job: JobState): string {
-    return job.attempt > 1 ? `factory/${job.issue}-a${job.attempt}` : `factory/${job.issue}`;
-  }
 }
+
+/** One branch per Attempt: `factory/<issue>`, then `factory/<issue>-a2`, … (ADR 0002). */
+const attemptBranch = (issue: number, attempt: number) => (attempt > 1 ? `factory/${issue}-a${attempt}` : `factory/${issue}`);
 
 const isLive = (j: JobState) => !["merged", "failed", "cancelled"].includes(j.status);
 
