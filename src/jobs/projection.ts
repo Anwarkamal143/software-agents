@@ -12,6 +12,8 @@ export interface JobState {
   stage: string | null;
   /** Why the Job is waiting, paused, failed or cancelled. */
   reason: string | null;
+  /** Back in the queue after waiting or paused: such Jobs start ahead of new ones (ADR 0008). */
+  resumed: boolean;
   /** Current Attempt number; 0 before the first Attempt starts. */
   attempt: number;
   /** Sum of the estimated cost on Stage-ending events. Always an estimate. */
@@ -42,6 +44,8 @@ const MOVES: Record<string, Move> = {
   "stage-errored": { from: ["running"], to: "queued" },
   "stage-interrupted": { from: ["running"], to: "queued" },
   "stage-needs-human": { from: ["running"], to: "waiting", reason: () => "question" },
+  // A failed Pre-push check ends the Stage run: nothing is pushed and a human decides (ADR 0007).
+  "prepush-failed": { from: ["running"], to: "waiting", reason: () => "prepush-failed" },
   bounced: { from: ["queued"], to: "queued" },
   "human-requested": { from: LIVE, to: "waiting", reason: (d) => text(d.cause) ?? text(d.kind) },
   "human-answered": { from: ["waiting", "paused"], to: "queued" },
@@ -85,6 +89,7 @@ export class JobProjection {
         status: "queued",
         stage: null,
         reason: null,
+        resumed: false,
         attempt: 0,
         cost_usd: 0,
         last_seq: event.seq,
@@ -97,6 +102,8 @@ export class JobProjection {
 
     const move = MOVES[event.type];
     if (move) {
+      const was = job.status;
+      job.resumed = move.to === "queued" && (was === "waiting" || was === "paused" || (job.resumed && was === "queued"));
       job.status = move.to;
       job.reason = move.reason?.(event.data) ?? null;
       if (job.status === "queued" && this.factoryPause) {
@@ -147,6 +154,7 @@ export class JobProjection {
       } else if (release && job.status === "paused" && job.reason === release.reason) {
         job.status = "queued";
         job.reason = null;
+        job.resumed = true;
       } else continue;
       job.last_seq = event.seq;
       job.updated_at = event.at;

@@ -18,6 +18,8 @@ export interface AttemptProgress {
   filesChanged: Set<string>;
   /** The Merge gate checkpoint has already been recorded. */
   atMergeGate: boolean;
+  /** The Job branch as last pushed, or null before the first push. */
+  pushedHead: string | null;
 }
 
 const ENDINGS = new Set(["stage-passed", "stage-failed", "stage-needs-human", "stage-skipped"]);
@@ -30,6 +32,7 @@ export function attemptProgress(events: FactoryEvent[], stages: string[]): Attem
     earlier: [],
     filesChanged: new Set(),
     atMergeGate: false,
+    pushedHead: null,
   };
   let lastFailure: Finding[] = [];
   for (const e of events) {
@@ -52,6 +55,7 @@ export function attemptProgress(events: FactoryEvent[], stages: string[]): Attem
       for (const f of lastFailure) progress.bouncedRootCauses.add(f.root_cause);
     }
     if (e.type === "checkpoint-evaluated" && e.data.checkpoint === "merge-gate") progress.atMergeGate = true;
+    if (e.type === "branch-pushed") progress.pushedHead = String(e.data.head);
   }
   return progress;
 }

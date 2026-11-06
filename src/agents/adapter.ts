@@ -7,8 +7,9 @@ export interface MeasuredFacts {
   tokens: number;
   turns: number;
   duration_ms: number;
-  /** The Working copy's head commit when the run ended, if known. */
+  /** The Job branch's head when the run ended. The Orchestrator measures this, never the agent. */
   head: string | null;
+  /** Measured by the Orchestrator from the pushed diff; an adapter's own value is ignored. */
   files_changed: string[];
 }
 
@@ -18,6 +19,8 @@ export interface AgentRunRequest {
   /** The Stage brief rendered as text for the session, issue text wrapped as untrusted. */
   renderedBrief: string;
   model: string;
+  /** Where the session runs and may write, and the environment it gets (its own HOME and caches). */
+  workingCopy: { dir: string; env: Record<string, string> };
   /** Hard limits for this Stage run. */
   budget: { usd: number; turns: number; minutes: number };
   /** JSON Schema the session's structured output must match. */

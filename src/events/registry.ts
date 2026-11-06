@@ -37,7 +37,7 @@ export const V1_EVENTS: EventRegistry = {
   },
   "job-reapproval-needed": { version: 1, data: obj({}, { editor: str }) },
   "job-cancelled": { version: 1, data: obj({}, { reason: str }) },
-  "attempt-started": { version: 1, data: obj({ branch: str }) },
+  "attempt-started": { version: 1, data: obj({ branch: str }, { base: str }) },
   "job-failed": { version: 1, data: obj({ reason: str }) },
   // Stage run
   "stage-started": { version: 1, data: obj(stage, { config_hash: str }) },
@@ -55,7 +55,12 @@ export const V1_EVENTS: EventRegistry = {
   // Evidence and Guards
   "evidence-recorded": { version: 1, data: obj({ head: str, sha256: str, size: int }) },
   "guard-blocked": { version: 1, data: obj({ guard: str }, { tool: str }) },
-  "prepush-failed": { version: 1, data: obj({ check: str }) },
+  "prepush-failed": {
+    version: 1,
+    data: obj({ check: str }, { failures: { type: "array", items: obj({ check: str, message: str }) } }),
+  },
+  // The Orchestrator pushed the Job branch from the Trusted clone after Pre-push checks passed.
+  "branch-pushed": { version: 1, data: obj({ branch: str, before: str, head: str }) },
   // Policies
   "checkpoint-evaluated": { version: 1, data: obj({ checkpoint: str }) },
   "budget-exceeded": { version: 1, data: obj({ budget: { enum: ["stage_run", "job", "daily"] } }) },
