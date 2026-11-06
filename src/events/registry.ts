@@ -26,6 +26,8 @@ const num = { type: "number", minimum: 0 };
 /** Cost, tokens, turns and duration ride on Stage-ending events. Cost is always estimated. */
 const usage = { cost_usd: num, tokens: int, turns: int, duration_ms: int };
 const stage = { stage: str };
+/** For a version that only added optional fields: older data already fits. */
+const sameData = (data: Record<string, unknown>) => data;
 
 /** The v1 event types (Event schema and observability, #16, plus ADR 0010). */
 export const V1_EVENTS: EventRegistry = {
@@ -49,11 +51,13 @@ export const V1_EVENTS: EventRegistry = {
     version: 1,
     data: obj({ ...stage, reason: { enum: ["crash", "sdk-error", "invalid-result", "timeout", "budget"] } }, usage),
   },
-  "stage-interrupted": { version: 1, data: obj(stage) },
+  // `reason` says what interrupted the run, such as a Factory fault; absent after a restart.
+  "stage-interrupted": { version: 2, data: obj(stage, { reason: str }), upgrades: { 1: sameData } },
   "stage-resumed": { version: 1, data: obj(stage) },
   bounced: { version: 1, data: obj({ from: str, to: str, bounce: { type: "integer", minimum: 1 } }) },
   // Evidence and Guards
-  "evidence-recorded": { version: 1, data: obj({ head: str, sha256: str, size: int }) },
+  // The Orchestrator's own proof about `head`, such as a passing Check Stage's output. Only a pass is Evidence.
+  "evidence-recorded": { version: 2, data: obj({ head: str, sha256: str, size: int }, { stage: str }), upgrades: { 1: sameData } },
   "guard-blocked": { version: 1, data: obj({ guard: str }, { tool: str }) },
   "prepush-failed": {
     version: 1,
@@ -86,7 +90,8 @@ export const V1_EVENTS: EventRegistry = {
   // Factory-wide
   "factory-started": { version: 1, data: obj() },
   "factory-stopped": { version: 1, data: obj() },
-  "factory-paused": { version: 1, data: obj({}, { reason: str }) },
+  // A Factory fault (ADR 0010) pauses with a `reason` such as sandbox-unavailable, and says what happened in `message`.
+  "factory-paused": { version: 2, data: obj({}, { reason: str, message: str }), upgrades: { 1: sameData } },
   "factory-resumed": { version: 1, data: obj() },
   "config-reloaded": { version: 1, data: obj({ config_hash: str }) },
   "housekeeping-ran": { version: 1, data: obj() },

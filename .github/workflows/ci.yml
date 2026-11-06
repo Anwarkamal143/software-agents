@@ -18,6 +18,21 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      # The Sandbox Check Stages run under (sandbox-runtime) needs these on Linux. Ubuntu 24.04+
+      # restricts unprivileged user namespaces, which bubblewrap needs: rather than lift that
+      # for the whole runner, an AppArmor profile grants `userns` to /usr/bin/bwrap alone.
+      - name: Install Sandbox dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap socat ripgrep
+          printf '%s\n' \
+            'abi <abi/4.0>,' \
+            'include <tunables/global>' \
+            'profile bwrap /usr/bin/bwrap flags=(unconfined) {' \
+            '  userns,' \
+            '}' | sudo tee /etc/apparmor.d/bwrap >/dev/null
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap
+          bwrap --ro-bind / / --unshare-user --unshare-net true && echo "bwrap can create user namespaces"
       - run: npm ci
       - run: npm run fetch:gitleaks
       - run: npm run typecheck
