@@ -260,8 +260,8 @@ export class Orchestrator {
   }
 
   /**
-   * Runs a Check Stage under the Sandbox in a fresh checkout of exactly the pushed head, so
-   * its result is about that commit, and records its output as Evidence for that head.
+   * Runs a Check Stage under the Sandbox in a fresh Check Stage copy of exactly the pushed head,
+   * so its result is about that commit; a pass records its output as Evidence for that head.
    */
   private async runCheck(ctx: StepContext, stage: ResolvedStage, run: RunEnvelope): Promise<StageOutcome> {
     const { wc } = ctx;
@@ -293,10 +293,10 @@ export class Orchestrator {
     }
     const blocked = checked.violations.length ? `\nThe Sandbox blocked:\n${checked.violations.map((v) => `  ${v}\n`).join("")}` : "";
     const output = this.deps.artifacts.put(checked.output + blocked);
-    await this.record({ ...run, actor: "orchestrator", type: "evidence-recorded", data: { stage: stage.id, passed: checked.passed, head, ...output } });
     const facts = { cost_usd: 0, duration_ms: Date.now() - startedAt, head };
     const extra = { output, violations: checked.violations.slice(0, MAX_VIOLATIONS_IN_EVENT) };
     if (checked.passed) {
+      await this.record({ ...run, actor: "orchestrator", type: "evidence-recorded", data: { stage: stage.id, head, ...output } });
       const summary = `All ${stage.commands!.length} command(s) passed.`;
       return { kind: "result", result: { verdict: "pass", summary, findings: [], artifacts: [] }, facts, extra };
     }

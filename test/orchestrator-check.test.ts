@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { afterAll, describe, expect, test } from "vitest";
-import { SandboxUnavailable, srtSandbox } from "../src/stages/check-runner.js";
-import { building, ScriptedAgent } from "./fakes/agent.js";
+import { srtSandbox } from "../src/stages/check-runner.js";
+import { building, pass, ScriptedAgent } from "./fakes/agent.js";
+import { unavailableSandbox } from "./fakes/sandbox.js";
 import { FakeSecrets } from "./fakes/secrets.js";
 import { approved } from "./fakes/source.js";
 import { fixture } from "./helpers/config.js";
@@ -34,14 +35,26 @@ describe("Orchestrator: Check Stages under the Sandbox", () => {
     expect(evidence).toMatchObject({
       actor: "orchestrator",
       stage_run_id: passed.stage_run_id,
-      data: { stage: "verify", passed: true, head: pushed.data.head, sha256: createHash("sha256").update(output).digest("hex"), size: Buffer.byteLength(output) },
+      data: { stage: "verify", head: pushed.data.head, sha256: createHash("sha256").update(output).digest("hex"), size: Buffer.byteLength(output) },
     });
     expect(passed.data).toMatchObject({ head: pushed.data.head, output: { sha256: evidence.data.sha256 }, violations: [] });
   });
 
+  test("a failing Check Stage records its output but no Evidence: only a pass is proof", async () => {
+    // The first build forgets built.txt, so verify fails; the second gets it right.
+    const f = fakeFactory(new ScriptedAgent({ build: [pass("Built, honest."), building] }));
+    f.source.push(approved(7));
+
+    await f.orchestrator.runUntilIdle();
+
+    const events = f.log.store.read();
+    const verifies = events.filter((e) => ["stage-passed", "stage-failed"].includes(e.type) && e.data.stage === "verify");
+    expect(verifies.map((e) => e.type)).toEqual(["stage-failed", "stage-passed"]);
+    expect(events.filter((e) => e.type === "evidence-recorded").map((e) => e.stage_run_id)).toEqual([verifies[1]!.stage_run_id]);
+  });
+
   test("with the Sandbox unavailable, the Check Stage doesn't run and the Factory pauses", async () => {
-    const sandbox = { ready: () => Promise.reject(new SandboxUnavailable("bubblewrap is not installed")), wrap: () => Promise.reject(new Error("unreachable")), close: async () => {} };
-    const f = fakeFactory(new ScriptedAgent({ build: [building] }), fixture("e2e.yaml"), { sandbox });
+    const f = fakeFactory(new ScriptedAgent({ build: [building] }), fixture("e2e.yaml"), { sandbox: unavailableSandbox() });
     f.source.push(approved(7));
     f.source.push(approved(8));
 

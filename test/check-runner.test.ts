@@ -4,6 +4,7 @@ import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { SandboxedCheckRunner, SandboxUnavailable, srtSandbox } from "../src/stages/check-runner.js";
+import { unavailableSandbox } from "./fakes/sandbox.js";
 import { tmpHome } from "./helpers/tmp.js";
 
 /** A Factory home holding a Check Stage copy, its Attempt's temp folder, and a user home with credentials in it. */
@@ -117,7 +118,7 @@ describe("SandboxedCheckRunner", () => {
     const runner = new SandboxedCheckRunner({
       factoryHome,
       userHome,
-      sandbox: { ready: async () => Promise.reject(new SandboxUnavailable("bubblewrap is not installed")), wrap: () => Promise.reject(new Error("unreachable")), close: async () => {} },
+      sandbox: unavailableSandbox(),
     });
     await expect(runner.run({ commands: ["echo ran > ran.txt"], cwd })).rejects.toThrow(SandboxUnavailable);
     expect(existsSync(join(cwd, "ran.txt"))).toBe(false);
