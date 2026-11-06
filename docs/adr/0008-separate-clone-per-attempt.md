@@ -1,0 +1,11 @@
+# A separate clone per Attempt, and the Orchestrator never runs git in it
+
+Each Target repo has one **Trusted clone** in the Factory home, owned by the Orchestrator and never touched by agents (your own checkout is never used). Each Attempt gets its own **Working copy**: a separate clone made from the Trusted clone with `--reference`, so it's fast and the shared objects stay read-only. The Sandbox lets agents write only inside it. The Orchestrator treats a Working copy, including its `.git/config` and `.git/hooks`, as untrusted: it never runs git there, but fetches the Job branch out into the Trusted clone (hooks disabled) and runs Pre-push checks, rebases, pushes and merges from there. We rejected git worktrees, the lighter and more obvious choice, because all worktrees share one `.git`: the Sandbox would have to let agents write to it, and a hijacked agent could plant a hook or `core.fsmonitor` command that then runs outside the Sandbox in another Job's or the Orchestrator's git calls.
+
+## Consequences
+
+- A Working copy is created when an Attempt starts, kept while the Job is waiting or paused (session resume needs it), deleted on merged or cancelled, and kept 7 days after a failure for inspection. A new Attempt always starts from a fresh one.
+- Each Attempt gets its own `HOME` and cache folders inside its Working copy, so the Sandbox never allows writes to your real caches. Disk use is higher than with worktrees; a shared read-only package cache can come later.
+- Concurrent Jobs in the same repo are allowed. Clashes surface at the Merge gate: under the merge lock the Orchestrator rebases in the Trusted clone and re-runs the Check Stages on the new head; a rebase conflict Bounces the Job to build with the conflicting files as findings.
+- Concurrency is configuration, not a Policy: a Factory-wide `max_running` (default 2) and a per-repo `max_running` (default 2) count running Stage runs only. A repo whose checks clash on ports or databases sets its limit to 1; v1 manages neither.
+- Queued Jobs start first come, first served by Job approval, with resumed Jobs ahead of new ones. A plan-limit rejection pauses the whole Factory until reset; past the daily Budget no new Stage runs start (ADR 0004).
