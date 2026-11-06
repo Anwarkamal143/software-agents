@@ -8,6 +8,7 @@ import type { FactoryEvent, NewEvent } from "../events/envelope.js";
 import type { EventLog } from "../jobs/event-log.js";
 import type { JobState } from "../jobs/projection.js";
 import type { Mirror } from "../mirror/mirror.js";
+import { budgetAfterStageRun, budgetBeforeStageRun, spentSince, type BudgetHit } from "../policies/budgets.js";
 import type { PrePushChecks } from "../repos/prepush.js";
 import type { Clones, WorkingCopy } from "../repos/clones.js";
 import type { Source, SourceItem } from "../source/source.js";
@@ -31,6 +32,8 @@ export interface OrchestratorDeps {
   prePush: PrePushChecks;
   /** Where check secrets are read from, by the Orchestrator alone. */
   secrets: SecretStore;
+  /** What time it is; the daily Budget counts from local midnight. */
+  now?: () => Date;
 }
 
 /** The approved issue, as recorded on `job-approved`. */
@@ -166,7 +169,22 @@ export class Orchestrator {
     if (stage.when && !conditionHolds(stage.when, ctx.approval.labels, ctx.progress.filesChanged)) {
       return instant(() => this.record({ ...base, type: "stage-skipped", actor: "orchestrator", data: { stage: stage.id, why: describeCondition(stage.when!) } }));
     }
+    // Checkpoint before a Stage run: the soft Budgets. A Stage run already going finishes (ADR 0004).
+    const hit = this.softBudgetHit(job, ctx.resolution);
+    if (hit) return instant(() => this.budgetExceeded(job, hit, "before-stage-run", ctx.cause));
     return { kind: "stage-run", repoLimit: ctx.resolution.maxRunning, run: () => this.runStage(ctx, stage) };
+  }
+
+  private softBudgetHit(job: JobState, resolution: Resolution): BudgetHit | null {
+    const now = this.deps.now?.() ?? new Date();
+    const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const daySpent = spentSince(this.deps.log.store.read(), midnight.toISOString());
+    return budgetBeforeStageRun({ budgets: resolution.policies.budgets, jobSpent: job.cost_usd, daySpent });
+  }
+
+  /** A passed Budget sends the Job to paused (budget). */
+  private budgetExceeded(job: JobState, hit: BudgetHit, checkpoint: "before-stage-run" | "after-stage-result", caused_by: string | null) {
+    return this.record({ type: "budget-exceeded", job_id: job.job_id, attempt: job.attempt, actor: "orchestrator", caused_by, data: { ...hit, checkpoint } });
   }
 
   private context(job: JobState): StepContext {
@@ -322,8 +340,22 @@ export class Orchestrator {
     await this.record({ ...run, actor: "orchestrator", caused_by: paused.id, type: "stage-interrupted", data: { stage: stage.id, reason: fault.reason } });
   }
 
-  /** Records how the Stage run ended and where the Pipeline goes next. */
+  /**
+   * Records how the Stage run ended and where the Pipeline goes next, then the checkpoint
+   * after a Stage result: an agent run over its hard Budget pauses the Job (budget).
+   */
   private async conclude(ctx: StepContext, stage: ResolvedStage, outcome: Extract<StageOutcome, { kind: "result" | "error" }>, run: RunEnvelope): Promise<void> {
+    const hit =
+      stage.kind === "agent"
+        ? budgetAfterStageRun({ budget: ctx.resolution.policies.budgets.stage_run, facts: outcome.facts, ...(outcome.kind === "error" && { errorReason: outcome.reason }) })
+        : null;
+    const last = await this.route(ctx, stage, outcome, run, hit !== null);
+    // A Job the route already sent to a human stays there; the request says enough.
+    if (hit && this.deps.log.job(ctx.job.job_id)?.status === "queued") await this.budgetExceeded(ctx.job, hit, "after-stage-result", last.id);
+  }
+
+  /** Records the Stage run's ending and the Pipeline's next move. Returns the last event recorded. */
+  private async route(ctx: StepContext, stage: ResolvedStage, outcome: Extract<StageOutcome, { kind: "result" | "error" }>, run: RunEnvelope, overBudget: boolean): Promise<FactoryEvent> {
     const { job, progress, resolution } = ctx;
     if (outcome.kind === "error") {
       const errored = await this.record({
@@ -331,45 +363,43 @@ export class Orchestrator {
         type: "stage-errored",
         data: { stage: stage.id, reason: outcome.reason, message: outcome.message, ...outcome.facts },
       });
+      // A hit Budget pauses the Job rather than asking about a Run error.
+      if (overBudget) return errored;
       // Retrying Run errors comes in #27; until then a human decides.
-      await this.askHuman(job, { kind: "approval", cause: "run-error", text: `${stage.id} ${outcome.reason}: ${outcome.message}` }, errored.id);
-      return;
+      return this.askHuman(job, { kind: "approval", cause: "run-error", text: `${stage.id} ${outcome.reason}: ${outcome.message}` }, errored.id);
     }
 
     const { result } = outcome;
     const data = { stage: stage.id, result, ...outcome.facts, ...outcome.extra };
-    if (result.verdict === "pass") {
-      await this.record({ ...run, type: "stage-passed", data });
-      return;
-    }
+    if (result.verdict === "pass") return this.record({ ...run, type: "stage-passed", data });
     if (result.verdict === "needs-human") {
       const asked = await this.record({ ...run, type: "stage-needs-human", data: { ...data, question: result.question!.text, options: result.question!.options } });
-      await this.askHuman(job, { kind: "question", text: result.question!.text, options: result.question!.options }, asked.id);
-      return;
+      return this.askHuman(job, { kind: "question", text: result.question!.text, options: result.question!.options }, asked.id);
     }
 
     const failed = await this.record({ ...run, type: "stage-failed", data: { ...data, summary: result.summary } });
     const repeated = result.findings.filter((f) => progress.bouncedRootCauses.has(f.root_cause)).map((f) => f.root_cause);
     if (!stage.on_fail) {
-      await this.askHuman(job, { kind: "approval", cause: "no-bounce-target", text: `${stage.id} failed and has no on_fail Stage. ${result.summary}` }, failed.id);
-    } else if (progress.bounces >= resolution.policies.bounce_cap) {
-      await this.askHuman(job, { kind: "approval", cause: "bounce-cap", text: `${stage.id} failed after ${progress.bounces} Bounces (cap ${resolution.policies.bounce_cap}). ${result.summary}` }, failed.id);
-    } else if (repeated.length) {
-      await this.askHuman(job, { kind: "approval", cause: "repeated-root-cause", text: `${stage.id} failed again for the same root cause: ${[...new Set(repeated)].join(", ")}.` }, failed.id);
-    } else {
-      await this.record({
-        job_id: job.job_id,
-        attempt: job.attempt,
-        actor: "orchestrator",
-        caused_by: failed.id,
-        type: "bounced",
-        data: { from: stage.id, to: stage.on_fail, bounce: progress.bounces + 1 },
-      });
+      return this.askHuman(job, { kind: "approval", cause: "no-bounce-target", text: `${stage.id} failed and has no on_fail Stage. ${result.summary}` }, failed.id);
     }
+    if (progress.bounces >= resolution.policies.bounce_cap) {
+      return this.askHuman(job, { kind: "approval", cause: "bounce-cap", text: `${stage.id} failed after ${progress.bounces} Bounces (cap ${resolution.policies.bounce_cap}). ${result.summary}` }, failed.id);
+    }
+    if (repeated.length) {
+      return this.askHuman(job, { kind: "approval", cause: "repeated-root-cause", text: `${stage.id} failed again for the same root cause: ${[...new Set(repeated)].join(", ")}.` }, failed.id);
+    }
+    return this.record({
+      job_id: job.job_id,
+      attempt: job.attempt,
+      actor: "orchestrator",
+      caused_by: failed.id,
+      type: "bounced",
+      data: { from: stage.id, to: stage.on_fail, bounce: progress.bounces + 1 },
+    });
   }
 
-  private async askHuman(job: JobState, data: { kind: "question" | "approval"; cause?: string; text: string; options?: string[] }, caused_by: string | null) {
-    await this.record({ type: "human-requested", job_id: job.job_id, attempt: job.attempt, actor: "orchestrator", caused_by, data });
+  private askHuman(job: JobState, data: { kind: "question" | "approval"; cause?: string; text: string; options?: string[] }, caused_by: string | null) {
+    return this.record({ type: "human-requested", job_id: job.job_id, attempt: job.attempt, actor: "orchestrator", caused_by, data });
   }
 
   /** Records one event and hands it to every Mirror. A Mirror failing never blocks a Job (ADR 0002). */

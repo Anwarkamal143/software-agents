@@ -84,6 +84,27 @@ describe("resolve: the prototype's guided scenarios", () => {
   });
 });
 
+describe("resolve: the size cap", () => {
+  const withLabels = (patches: Record<string, object>) => {
+    const config = draftConfig();
+    Object.assign(config.label_overrides, patches);
+    return config;
+  };
+
+  test("a label can tighten the size cap", () => {
+    const r = resolve(withLabels({ "factory:small": { size_cap: 100 } }), job("acme/web-app", ["factory:small"]));
+    expect(r.policies.size_cap).toBe(100);
+    expect(r.source.size_cap).toBe("Label factory:small");
+    expect(r.refused).toEqual([]);
+  });
+
+  test("a label can't raise the size cap", () => {
+    const r = resolve(withLabels({ "factory:big": { size_cap: 5000 } }), job("acme/web-app", ["factory:big"]));
+    expect(r.policies.size_cap).toBe(400);
+    expect(r.refused).toEqual([{ layer: "Label factory:big", key: "size_cap", value: 5000, why: "would loosen 400 → 5000" }]);
+  });
+});
+
 describe("resolve: tighten-only fails closed", () => {
   test("a label setting a Policy key with no strictness rule is refused, not applied", () => {
     const config = draftConfig();

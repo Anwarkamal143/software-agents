@@ -66,8 +66,14 @@ export const V1_EVENTS: EventRegistry = {
   // The Orchestrator pushed the Job branch from the Trusted clone after Pre-push checks passed.
   "branch-pushed": { version: 1, data: obj({ branch: str, before: str, head: str }) },
   // Policies
-  "checkpoint-evaluated": { version: 1, data: obj({ checkpoint: str }) },
-  "budget-exceeded": { version: 1, data: obj({ budget: { enum: ["stage_run", "job", "daily"] } }) },
+  // `checkpoint` is before-stage-run, after-stage-result, merge-gate or after-merge; `outcome` is what it decided.
+  "checkpoint-evaluated": { version: 2, data: obj({ checkpoint: str }, { outcome: str, why: str }), upgrades: { 1: sameData } },
+  // Spend is always an estimate.
+  "budget-exceeded": {
+    version: 2,
+    data: obj({ budget: { enum: ["stage_run", "job", "daily"] } }, { checkpoint: str, spent_usd: num, limit_usd: num, why: str }),
+    upgrades: { 1: sameData },
+  },
   "plan-limit-hit": { version: 1, data: obj({}, { resets_at: str }) },
   "plan-limit-reset": { version: 1, data: obj() },
   // Humans
@@ -82,7 +88,11 @@ export const V1_EVENTS: EventRegistry = {
   // Merging
   "pr-opened": { version: 1, data: obj({ number: { type: "integer", minimum: 1 } }, { url: str }) },
   rebased: { version: 1, data: obj({ base: str }) },
-  "merge-gate-evaluated": { version: 1, data: obj({ passed: { type: "boolean" } }) },
+  "merge-gate-evaluated": {
+    version: 2,
+    data: obj({ passed: { type: "boolean" } }, { head: str, failures: { type: "array", items: obj({ code: str, why: str }) } }),
+    upgrades: { 1: sameData },
+  },
   "would-have-merged": { version: 1, data: obj({ would: { type: "boolean" } }, { why: str }) },
   "pr-merged": { version: 1, data: obj({}, { number: int, by: str }) },
   "pr-closed": { version: 1, data: obj({}, { number: int }) },
