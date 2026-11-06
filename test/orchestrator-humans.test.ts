@@ -89,6 +89,19 @@ describe("Orchestrator: Human requests and Reply commands", () => {
     expect(f.log.store.read().find((e) => e.type === "stage-passed" && e.data.stage === "triage")?.data.resume_failed).toBe("session not found");
   });
 
+  test("a fresh Stage run that also reports a failed resume is a Run error, not a loop", async () => {
+    const resumeFailed: AgentRunOutcome = { kind: "resume-failed", message: "session not found" };
+    const f = fakeFactory(new ScriptedAgent({ triage: [asks("Which region?", ["EU", "US"]), resumeFailed, resumeFailed] }));
+    f.source.push(approved(7));
+    await f.orchestrator.runUntilIdle();
+    f.source.push(comment(7, "/answer A"));
+    await f.orchestrator.runUntilIdle();
+
+    expect(f.agent.stagesRun()).toEqual(["triage", "triage", "triage"]);
+    expect(f.log.store.read().find((e) => e.type === "stage-errored")).toMatchObject({ data: { stage: "triage", reason: "sdk-error" } });
+    expect(f.onlyJob()).toMatchObject({ status: "waiting", reason: "run-error" });
+  });
+
   test("/reject Bounces to build with the reason as a finding", async () => {
     const f = fakeFactory(new ScriptedAgent({ build: [building, building], review: [invalid] }));
     f.source.push(approved(7));

@@ -51,6 +51,19 @@ export function renderHumanRequest(event: FactoryEvent): string {
   return lines.join("\n");
 }
 
+/**
+ * The reply a Mirror posts to a Reply command that came after the request was already
+ * answered (`reply-ignored` with why `already-answered`). It never repeats the late command.
+ */
+export function renderAlreadyAnswered(ignored: FactoryEvent): string {
+  return [
+    FACTORY_MARKER,
+    `<!-- factory:job=${ignored.job_id} request=${String(ignored.data.request ?? "")} -->`,
+    `This request was already answered, so this reply changes nothing. The first answer recorded wins; see \`factory events\` for Job \`${ignored.job_id}\`.`,
+    "",
+  ].join("\n");
+}
+
 function approveConsequence(cause: string, stage: string): string {
   if (MERGE_CAUSES.has(cause)) return "the Factory merges once the Merge gate's fixed core passes; /approve never overrides it.";
   if (cause === "bounce-cap") return `${stage} Bounces once more, past the cap.`;

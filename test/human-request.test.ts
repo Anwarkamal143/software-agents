@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import type { FactoryEvent } from "../src/events/envelope.js";
 import { FACTORY_MARKER, parseReplyCommand } from "../src/humans/commands.js";
-import { renderHumanRequest } from "../src/humans/request.js";
+import { renderAlreadyAnswered, renderHumanRequest } from "../src/humans/request.js";
 
 const requested = (data: Record<string, unknown>): FactoryEvent => ({
   id: "01REQ",
@@ -88,6 +88,14 @@ describe("renderHumanRequest", () => {
     expect(text).toContain("x".repeat(100));
     expect(text).not.toContain("x".repeat(2001));
     // However it's dressed up, the request is the Factory's own comment and is never parsed.
+    expect(parseReplyCommand(text)).toEqual({ kind: "factory" });
+  });
+
+  test("a late reply is told the request was already answered, in a Factory comment", () => {
+    const text = renderAlreadyAnswered({ ...requested({ why: "already-answered", request: "01REQ" }), type: "reply-ignored" });
+    expect(text).toBe(
+      `${FACTORY_MARKER}\n<!-- factory:job=01JOB request=01REQ -->\nThis request was already answered, so this reply changes nothing. The first answer recorded wins; see \`factory events\` for Job \`01JOB\`.\n`,
+    );
     expect(parseReplyCommand(text)).toEqual({ kind: "factory" });
   });
 });
