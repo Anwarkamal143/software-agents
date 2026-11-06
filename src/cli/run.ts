@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { loadConfig } from "../config/load.js";
+import { printLogs } from "./logs.js";
 import { parseReplyCommand } from "../humans/commands.js";
 import { recordReply, type IgnoredWhy } from "../humans/replies.js";
 import { EventLog } from "../jobs/event-log.js";
@@ -14,12 +15,15 @@ export interface CliIo {
   home: string;
   stdout: { write(s: string): void };
   stderr: { write(s: string): void };
+  /** Stops a command that keeps running, such as `logs --follow`. */
+  signal?: AbortSignal;
 }
 
 const USAGE = `Usage: factory <command>
 
 Commands:
   status                    List Jobs with their status, Stage, reason and estimated cost
+  logs <job> [--follow]     One Job's events with each Stage run's Transcript; --follow keeps going
   events [--from <seq>] [--json]
                             Print the Event log from a seq (default 1)
   config check [<file>]     Check factory.yaml (default: the one in the Factory home)
@@ -39,6 +43,8 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
         return status(io);
       case "events":
         return events(rest, io);
+      case "logs":
+        return await logs(rest, io);
       case "answer":
       case "approve":
       case "reject":
@@ -116,6 +122,24 @@ function events(args: string[], io: CliIo): number {
   }
   store?.close();
   return 0;
+}
+
+async function logs(args: string[], io: CliIo): Promise<number> {
+  const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { follow: { type: "boolean", short: "f", default: false } } });
+  const [job_id] = positionals;
+  if (!job_id) {
+    io.stderr.write("Usage: factory logs <job> [--follow]\n");
+    return 2;
+  }
+  const store = openStore(io.home);
+  if (!store) throw new Error("The Factory has no Jobs yet.");
+  try {
+    if (!store.read().some((e) => e.job_id === job_id)) throw new Error(`No Job ${job_id}.`);
+    await printLogs(store, io.home, job_id, (s) => io.stdout.write(s), { follow: values.follow, ...(io.signal && { signal: io.signal }) });
+    return 0;
+  } finally {
+    store.close();
+  }
 }
 
 /** The CLI channel for Reply commands: parsed exactly like a comment, recorded like one (ADR 0006). */

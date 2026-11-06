@@ -14,13 +14,16 @@ export interface MeasuredFacts {
 }
 
 export interface AgentRunRequest {
+  job_id: string;
   stage_run_id: string;
   brief: StageBrief;
   /** The Stage brief rendered as text for the session, issue text wrapped as untrusted. */
   renderedBrief: string;
   model: string;
   /** Where the session runs and may write, and the environment it gets (its own HOME and caches). */
-  workingCopy: { dir: string; env: Record<string, string> };
+  workingCopy: { dir: string; env: { HOME: string; XDG_CONFIG_HOME: string; XDG_CACHE_HOME: string; npm_config_cache: string; TMPDIR: string } };
+  /** The only hosts the session's commands may reach: the repo's allowlist for a Stage that writes the branch, else none (ADR 0007). */
+  network: string[];
   /** Hard limits for this Stage run. */
   budget: { usd: number; turns: number; minutes: number };
   /** JSON Schema the session's structured output must match. */

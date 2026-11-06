@@ -452,11 +452,13 @@ export class Orchestrator {
       humanAnswers: progress.answers,
     };
     const request = {
+      job_id: job.job_id,
       stage_run_id,
       brief,
       renderedBrief: renderBrief(brief),
       model: stage.model!,
       workingCopy: { dir: wc.path, env: wc.env },
+      network: stage.tools === "write-branch" ? (stage.network ?? []) : [],
       budget: ctx.resolution.policies.budgets.stage_run,
       resultSchema: STAGE_RESULT_SCHEMA,
     };
