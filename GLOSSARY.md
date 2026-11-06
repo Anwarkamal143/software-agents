@@ -13,7 +13,7 @@ One unit of work travelling through the Factory, from a tracked issue to a merge
 _Avoid_: task, run, card, ticket
 
 **Source**:
-Where Jobs come from, such as GitHub Issues.
+Where Jobs come from, such as GitHub Issues. A Source only reads; everything written back goes through a Mirror.
 _Avoid_: intake, inbox
 
 **Stage**:
@@ -49,7 +49,7 @@ The operating-system confinement every command in a Stage run executes inside, a
 _Avoid_: container, jail, isolation (alone)
 
 **Job approval**:
-An allowed person applying the ready label to an issue, which is what admits it to the Factory. Who wrote the issue doesn't matter; editing it afterwards needs approval again.
+An allowed person applying the ready label to an issue, which is what admits it to the Factory. Who wrote the issue doesn't matter; an edit afterwards needs approval again unless an allowed person made it.
 _Avoid_: intake, acceptance, triage
 
 **Pre-push check**:

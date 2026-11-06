@@ -8,3 +8,4 @@ When a Job is waiting, the Factory accepts a human's reply only as a fixed **Rep
 - Commands from people not on the allowlist, and commands sent while the Job isn't waiting, are logged and otherwise ignored. Edits to a reply that has already been recorded change nothing.
 - Free-text answers (`other:`) reach the resumed Stage only as human input inside the Stage brief or session turn, marked with who sent it, never as instructions to the Orchestrator.
 - `/approve` overrides a Risk rule or the Autonomy level, but never the fixed core of the Merge gate.
+- Replies arrive through the same Source poll that carries approvals, edits and closes (one conditional poll per Target repo every 60s), not a separate reply poll (amended by Source trigger mechanics, #17).
