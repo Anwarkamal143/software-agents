@@ -147,7 +147,7 @@ _Avoid_: permissions (alone), mode
 ## Policies
 
 **Autonomy level**:
-How far the Factory may go on its own in a Target repo: off (you merge), trial (you merge, and the Factory says whether it would have), or auto (the Factory merges when the Merge gate passes).
+How far the Factory may go on its own in a Target repo: off (you merge, or `/approve` and the Factory merges), trial (the same, and the Factory says whether it would have merged), or auto (the Factory merges when the Merge gate passes).
 _Avoid_: merge mode, confidence mode
 
 **Merge gate**:
