@@ -1,0 +1,106 @@
+import { describe, expect, test } from "vitest";
+import { resolve } from "../src/config/resolve.js";
+import { draftConfig } from "./helpers/config.js";
+
+const job = (repo: string, labels: string[] = []) => ({ repo, labels });
+
+/** The six guided scenarios from the config prototype (prototype/config-shape). */
+describe("resolve: the prototype's guided scenarios", () => {
+  test("1. ordinary feature: the full feature Pipeline, Autonomy auto set by the repo", () => {
+    const r = resolve(draftConfig(), job("acme/web-app"));
+
+    expect(r.errors).toEqual([]);
+    expect(r.pipeline).toBe("feature");
+    expect(r.pipelineSource).toBe("Target repo default");
+    expect(r.stages.map((s) => s.id)).toEqual(["triage", "build", "verify", "review", "security"]);
+    expect(r.stages[1]).toMatchObject({ id: "build", kind: "agent", model: "claude-opus-5-5", tools: "write-branch" });
+    expect(r.stages[0]).toMatchObject({ model: "claude-sonnet-5-5" });
+    expect(r.stages[2]).toMatchObject({ kind: "check", commands: ["pnpm lint", "pnpm typecheck", "pnpm test"] });
+    expect(r.policies.autonomy).toBe("auto");
+    expect(r.source.autonomy).toBe("Target repo");
+    expect(r.source["budgets.job.usd"]).toBe("Factory");
+    expect(r.refused).toEqual([]);
+  });
+
+  test("2. docs change: pipeline:docs switches Pipeline and tightens bounce cap and Stage-run budget", () => {
+    const r = resolve(draftConfig(), job("acme/web-app", ["pipeline:docs"]));
+
+    expect(r.errors).toEqual([]);
+    expect(r.pipeline).toBe("docs");
+    expect(r.pipelineSource).toBe("Label pipeline:docs");
+    expect(r.stages.map((s) => s.id)).toEqual(["build", "docs-check", "review"]);
+    expect(r.policies.bounce_cap).toBe(1);
+    expect(r.policies.budgets.stage_run).toEqual({ usd: 2, turns: 100, minutes: 30 });
+    expect(r.source["budgets.stage_run.usd"]).toBe('Pipeline "docs"');
+  });
+
+  test("3. a label that tries to unlock auto-merge is refused, with the reason", () => {
+    const r = resolve(draftConfig(), job("acme/payments-api", ["factory:autonomy-auto"]));
+
+    expect(r.policies.autonomy).toBe("off");
+    expect(r.refused).toEqual([
+      { layer: "Label factory:autonomy-auto", key: "autonomy", value: "auto", why: "would loosen off → auto" },
+    ]);
+  });
+
+  test("4. labels that tighten are accepted", () => {
+    const r = resolve(draftConfig(), job("acme/web-app", ["factory:human-merge", "factory:small-budget"]));
+
+    expect(r.refused).toEqual([]);
+    expect(r.policies.autonomy).toBe("off");
+    expect(r.policies.budgets.job.usd).toBe(5);
+    expect(r.source.autonomy).toBe("Label factory:human-merge");
+  });
+
+  test("5. a Pipeline the repo can't run sends the Job to a question instead of skipping the Check Stage", () => {
+    const r = resolve(draftConfig(), job("acme/payments-api", ["pipeline:docs"]));
+
+    expect(r.errors).toEqual([
+      'Check Stage "docs-check" needs "docs_verify" commands, but acme/payments-api doesn\'t define them.',
+    ]);
+    expect(r.stages.find((s) => s.id === "docs-check")).toMatchObject({ kind: "check", commands: [] });
+  });
+
+  test("Risk rules add up across layers", () => {
+    const r = resolve(draftConfig(), job("acme/payments-api"));
+    expect(r.riskRules.map((x) => [x.name, x.layer])).toEqual([
+      ["auth", "Built-in default"],
+      ["payments", "Built-in default"],
+      ["migrations", "Built-in default"],
+      ["secrets", "Built-in default"],
+      ["ci-config", "Built-in default"],
+      ["ledger", "Target repo"],
+    ]);
+  });
+
+  test("two Pipeline labels are a question, not a guess", () => {
+    const r = resolve(draftConfig(), job("acme/web-app", ["pipeline:docs", "pipeline:bugfix"]));
+    expect(r.errors).toEqual(["Two Pipeline labels (pipeline:docs, pipeline:bugfix). The Job can't start until one is removed."]);
+  });
+
+  test("max_running resolves per repo, defaulting to 2", () => {
+    expect(resolve(draftConfig(), job("acme/payments-api")).maxRunning).toBe(1);
+    expect(resolve(draftConfig(), job("acme/web-app")).maxRunning).toBe(2);
+  });
+});
+
+describe("resolve: tighten-only fails closed", () => {
+  test("a label setting a Policy key with no strictness rule is refused, not applied", () => {
+    const config = draftConfig();
+    // A key the schema doesn't know yet, as if added later without a strictness rule.
+    (config.label_overrides as Record<string, object>)["factory:odd"] = { new_knob: 1 };
+    (config.policies as Record<string, unknown>).new_knob = 5;
+    const r = resolve(config, job("acme/web-app", ["factory:odd"]));
+    expect(r.refused).toEqual([
+      { layer: "Label factory:odd", key: "new_knob", value: 1, why: "has no tighten-only rule, so only Factory or Target repo config may set it" },
+    ]);
+    expect((r.policies as unknown as Record<string, unknown>).new_knob).toBe(5);
+  });
+
+  test("only the Target repo layer switches Risk rules off", () => {
+    const config = draftConfig();
+    config.repos[0]!.policies = { ...config.repos[0]!.policies, risk_rules_off: ["payments"] };
+    const r = resolve(config, job("acme/web-app"));
+    expect(r.riskRules.map((x) => x.name)).toEqual(["auth", "migrations", "secrets", "ci-config"]);
+  });
+});

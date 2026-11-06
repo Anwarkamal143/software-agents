@@ -1,0 +1,66 @@
+# The config prototype's draft (prototype/config-shape), in the v1 shape.
+version: 1
+humans: [alice]
+max_running: 2
+
+agent:
+  adapter: claude
+  auth: api-key
+  model: claude-sonnet-5-5
+
+state:
+  store: sqlite
+  mirrors: [github]
+
+sources:
+  - kind: github-issues
+    ready_label: factory:ready
+
+policies:
+  autonomy: trial
+  bounce_cap: 3
+  budgets:
+    stage_run: { usd: 5, turns: 100, minutes: 30 }
+    job: { usd: 20 }
+    daily: { usd: 50 }
+  size_cap: 400
+  post_merge_watch_minutes: 60
+
+stages:
+  triage: { kind: agent, instructions: factory:triage, tools: read-only }
+  build: { kind: agent, instructions: factory:build, tools: write-branch, model: claude-opus-5-5 }
+  verify: { kind: check, run: verify }
+  docs-check: { kind: check, run: docs_verify }
+  review: { kind: agent, instructions: factory:review, tools: read-only, on_fail: build }
+  security: { kind: agent, instructions: factory:security-review, tools: read-only, on_fail: build }
+
+pipelines:
+  feature: { stages: [triage, build, verify, review, security] }
+  bugfix: { stages: [triage, build, verify, review] }
+  docs:
+    stages: [build, docs-check, review]
+    policies: { bounce_cap: 1, budgets: { stage_run: { usd: 2 } } }
+
+repos:
+  - name: acme/web-app
+    default_pipeline: feature
+    commands:
+      verify: ["pnpm lint", "pnpm typecheck", "pnpm test"]
+      docs_verify: ["pnpm docs:build"]
+    policies: { autonomy: auto }
+
+  - name: acme/payments-api
+    default_pipeline: feature
+    max_running: 1
+    commands:
+      verify: ["go vet ./...", "go test ./..."]
+    policies:
+      autonomy: off
+      budgets: { job: { usd: 40 } }
+      risk_rules:
+        - { name: ledger, paths: ["internal/ledger/**"] }
+
+label_overrides:
+  factory:human-merge: { autonomy: off }
+  factory:small-budget: { budgets: { job: { usd: 5 } } }
+  factory:autonomy-auto: { autonomy: auto }

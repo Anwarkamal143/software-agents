@@ -1,0 +1,40 @@
+{
+  "name": "software-factory",
+  "version": "0.1.0",
+  "description": "Turns approved GitHub issues into reviewed, merged pull requests.",
+  "type": "module",
+  "license": "ISC",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "bin": {
+    "factory": "dist/cli/bin.js"
+  },
+  "files": [
+    "dist",
+    "schema"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Anwarkamal143/software-agents.git"
+  },
+  "dependencies": {
+    "ajv": "^8.20.0",
+    "ulid": "^3.0.2",
+    "yaml": "^2.9.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.6.6",
+    "eslint": "^10.14.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.72.1",
+    "vitest": "^5.1.0"
+  }
+}
