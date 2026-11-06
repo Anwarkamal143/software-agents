@@ -41,6 +41,12 @@ export const V1_EVENTS: EventRegistry = {
     data: obj({ repo: str, issue: { type: "integer", minimum: 1 } }, { title: { type: "string" }, body: { type: "string" }, labels: { type: "array", items: str } }),
   },
   "job-reapproval-needed": { version: 1, data: obj({}, { editor: str }) },
+  // The issue's title or body changed after approval. `allowed`: the editor is on `humans`, so the
+  // edit counts as re-approval; otherwise it waits for a human's /approve (ADR 0007). The text is untrusted.
+  "issue-edited": {
+    version: 1,
+    data: obj({ hash: str }, { by: str, title: { type: "string" }, body: { type: "string" }, allowed: { type: "boolean" } }),
+  },
   // A human asked for a failed or cancelled Job's next Attempt (ADR 0010): by re-labelling the
   // issue, which carries its text as re-approved, or with `factory retry`.
   "job-retried": { version: 1, data: obj({}, { title: { type: "string" }, body: { type: "string" }, labels: { type: "array", items: str } }) },

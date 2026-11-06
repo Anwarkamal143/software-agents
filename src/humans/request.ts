@@ -66,6 +66,7 @@ export function renderAlreadyAnswered(ignored: FactoryEvent): string {
 
 function approveConsequence(cause: string, stage: string): string {
   if (MERGE_CAUSES.has(cause)) return "the Factory merges once the Merge gate's fixed core passes; /approve never overrides it.";
+  if (cause === "reapproval") return "the edited issue counts as approved, and the Job carries on with it.";
   if (cause === "bounce-cap") return `${stage} Bounces once more, past the cap.`;
   if (cause === "repeated-root-cause") return `${stage} Bounces once more, despite the repeated root cause.`;
   return `${stage} runs again.`;

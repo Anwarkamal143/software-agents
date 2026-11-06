@@ -182,6 +182,8 @@ describe("Orchestrator: watching a Stage run", () => {
       read: (from, limit) => store.read(from, limit),
       follow: (from, o) => store.follow(from, o),
       transaction: (fn) => store.transaction(fn),
+      cursor: (name) => store.cursor(name),
+      saveCursor: (name, value) => store.saveCursor(name, value),
       close: () => store.close(),
     });
     const failThenHang = (req: AgentRunRequest) => {

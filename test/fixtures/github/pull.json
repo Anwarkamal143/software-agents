@@ -1,0 +1,15 @@
+{
+  "url": "https://api.github.com/repos/acme/web-app/pulls/12",
+  "id": 1,
+  "node_id": "MDExOlB1bGxSZXF1ZXN0MQ==",
+  "html_url": "https://github.com/acme/web-app/pull/12",
+  "number": 12,
+  "state": "closed",
+  "title": "Add a /health endpoint (#7)",
+  "user": { "login": "factory-app[bot]", "id": 9, "type": "Bot", "site_admin": false },
+  "body": "Closes #7",
+  "merged": true,
+  "merged_at": "2026-11-01T12:00:00Z",
+  "head": { "label": "acme:factory/7", "ref": "factory/7", "sha": "6dcb09b5b57875f334f61aebed695e2e4193db5e" },
+  "base": { "label": "acme:main", "ref": "main", "sha": "e5bd3914e2e596debea16f433f57875b5b90bcd6" }
+}

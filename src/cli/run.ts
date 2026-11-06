@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { loadConfig } from "../config/load.js";
 import { printLogs } from "./logs.js";
+import { factoryRun } from "./factory-run.js";
 import { parseReplyCommand } from "../humans/commands.js";
 import { recordReply, type IgnoredWhy } from "../humans/replies.js";
 import { EventLog } from "../jobs/event-log.js";
@@ -22,6 +23,7 @@ export interface CliIo {
 const USAGE = `Usage: factory <command>
 
 Commands:
+  run                       Run the Factory in the foreground until Ctrl-C
   status                    List Jobs with their status, Stage, reason and estimated cost
   logs <job> [--follow]     One Job's events with each Stage run's Transcript; --follow keeps going
   events [--from <seq>] [--json]
@@ -39,6 +41,9 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
   const [command, ...rest] = argv;
   try {
     switch (command) {
+      case "run":
+        await factoryRun(io.home, io.signal ?? new AbortController().signal, (s) => io.stderr.write(s));
+        return 0;
       case "status":
         return status(io);
       case "events":

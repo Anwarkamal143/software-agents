@@ -104,7 +104,7 @@ export class JobProjection {
     const job = this.states.get(event.job_id);
     if (!job || disallowedMove(job, event)) return;
 
-    const move = MOVES[event.type];
+    const move = held(job, event) ? undefined : MOVES[event.type];
     if (move) {
       const was = job.status;
       job.resumed = move.to === "queued" && (was === "waiting" || was === "paused" || (job.resumed && was === "queued"));
@@ -176,7 +176,19 @@ export class JobProjection {
   }
 }
 
+/** How a Stage run already going ends; while a Job waits for re-approval its result is held (ADR 0007). */
+const HELD_ENDINGS = new Set(["stage-passed", "stage-failed", "stage-needs-human", "stage-errored", "stage-interrupted", "prepush-failed"]);
+
+/**
+ * A Stage run that was going when the issue was edited by someone not allowed ends while the
+ * Job waits for re-approval: its ending is recorded, but the Job stays waiting.
+ */
+function held(job: JobState, event: Pick<NewEvent, "type">): boolean {
+  return job.status === "waiting" && job.reason === "reapproval" && HELD_ENDINGS.has(event.type);
+}
+
 function disallowedMove(job: JobState, event: Pick<NewEvent, "type">): { from_status: string; why: string } | null {
+  if (held(job, event)) return null;
   const move = MOVES[event.type];
   if (!move || move.from.includes(job.status)) return null;
   return { from_status: job.status, why: `${event.type} is not allowed while the Job is ${job.status}` };

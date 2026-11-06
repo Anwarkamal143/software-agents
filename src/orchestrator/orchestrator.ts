@@ -12,6 +12,7 @@ import { budgetAfterStageRun, budgetBeforeStageRun, spentToday, type BudgetHit }
 import type { Checkpoint } from "../policies/checkpoint.js";
 import type { PrePushChecks } from "../repos/prepush.js";
 import type { Clones, WorkingCopy } from "../repos/clones.js";
+import { issueHash } from "../source/github.js";
 import type { Source, SourceItem } from "../source/source.js";
 import { renderBrief, renderHumanInput, type StageBrief } from "../stages/brief.js";
 import { parseReplyCommand } from "../humans/commands.js";
@@ -100,7 +101,8 @@ type Plan = { kind: "instant"; run: () => Promise<void> } | { kind: "stage-run";
  * decided from the Event log and config alone; Verdicts only route (ADR 0003).
  */
 export class Orchestrator {
-  private cursor: string | null = null;
+  /** The poll in flight, if any. */
+  private polling: Promise<void> | null = null;
   /** Aborted once the Orchestrator must stop: every session is cut off and nothing new starts. */
   private readonly stopping = new AbortController();
 
@@ -223,24 +225,75 @@ export class Orchestrator {
     return queued.sort((a, b) => Number(b.resumed) - Number(a.resumed));
   }
 
-  private async poll(): Promise<void> {
-    const { items, cursor } = await this.deps.source.poll(this.cursor);
+  /**
+   * Polls the Source once and admits what it reports, from the cursor kept in the Job store,
+   * so a restart catches up on what happened while the Factory was off. Safe to call while
+   * Stage runs go on (the foreground loop polls every 60s); overlapping calls share one poll.
+   */
+  poll(): Promise<void> {
+    this.polling ??= this.pollOnce().finally(() => (this.polling = null));
+    return this.polling;
+  }
+
+  private async pollOnce(): Promise<void> {
+    const store = this.deps.log.store;
+    const { items, cursor } = await this.deps.source.poll(store.cursor(SOURCE_CURSOR));
     for (const item of items) await this.admit(item);
-    this.cursor = cursor;
+    try {
+      store.saveCursor(SOURCE_CURSOR, cursor);
+    } catch (err) {
+      throw new JobStoreUnwritable(err);
+    }
   }
 
   private async admit(item: SourceItem): Promise<void> {
-    if (item.kind === "comment") return this.reply(item);
-    const issue = item.kind === "approved" ? item.issue.number : item.issue;
-    const live = this.deps.log.jobs().find((j) => j.repo === item.repo && j.issue === issue && isLive(j));
-    if (item.kind === "unapproved") {
-      if (live) {
-        await this.record({ type: "job-cancelled", job_id: live.job_id, actor: `human:${item.by}`, data: { reason: "ready label removed" } });
+    switch (item.kind) {
+      case "comment":
+        return this.reply(item);
+      case "approved":
+        return this.approved(item);
+      case "edited":
+        return this.edited(item);
+      case "unapproved":
+      case "closed": {
+        const live = this.liveJob(item.repo, item.issue);
+        if (!live) return;
+        const reason = item.kind === "unapproved" ? "ready label removed" : `issue closed by ${item.by}`;
+        await this.record({ type: "job-cancelled", job_id: live.job_id, attempt: live.attempt, actor: `human:${item.by}`, data: { reason } });
         await this.deps.clones.removeJob(live.job_id);
+        return;
       }
-      return;
+      case "pr-merged":
+      case "pr-closed": {
+        const job = this.jobOnBranch(item.repo, item.branch);
+        if (!job || !isLive(job)) return;
+        if (item.kind === "pr-closed") return void (await this.record({ ...jobEvent(job, null), actor: `human:${item.by}`, type: "pr-closed", data: { number: item.pr } }));
+        // You merged the Job's PR yourself (Autonomy off): the Job is merged.
+        await this.record({ ...jobEvent(job, null), actor: `human:${item.by}`, type: "pr-merged", data: { number: item.pr, by: item.by } });
+        await this.deps.clones.removeJob(job.job_id);
+        return;
+      }
+      case "reopened":
+        // Nothing starts until an allowed person applies the ready label again.
+        return;
     }
-    if (live) return; // One live Job per issue.
+  }
+
+  private liveJob(repo: string, issue: number): JobState | undefined {
+    return this.deps.log.jobs().find((j) => j.repo === repo && j.issue === issue && isLive(j));
+  }
+
+  /** The Job one of whose Attempts runs on `branch`. */
+  private jobOnBranch(repo: string, branch: string): JobState | undefined {
+    const started = this.deps.log.store.read().findLast((e) => e.type === "attempt-started" && e.data.branch === branch && this.deps.log.job(e.job_id!)?.repo === repo);
+    return started?.job_id ? this.deps.log.job(started.job_id) : undefined;
+  }
+
+  /** Job approval: only from someone on `humans`, whatever the Source says (ADR 0007). */
+  private async approved(item: Extract<SourceItem, { kind: "approved" }>): Promise<void> {
+    if (!this.deps.config.current.humans.includes(item.by)) return;
+    const issue = item.issue.number;
+    if (this.liveJob(item.repo, issue)) return; // One live Job per issue.
     // Re-labelling a failed or cancelled Job starts its next Attempt; after a merge, a new Job.
     const ended = this.deps.log.jobs().findLast((j) => j.repo === item.repo && j.issue === issue);
     if (ended && (ended.status === "failed" || ended.status === "cancelled")) {
@@ -253,16 +306,41 @@ export class Orchestrator {
       });
       return;
     }
-    const branch = attemptBranch(item.issue.number, this.attemptsOfIssue(item.repo, item.issue.number) + 1);
+    const branch = attemptBranch(issue, this.attemptsOfIssue(item.repo, issue) + 1);
     const job_id = ulid();
     const approval = await this.record({
       type: "job-approved",
       job_id,
       actor: `human:${item.by}`,
-      data: { repo: item.repo, issue: item.issue.number, title: item.issue.title, body: item.issue.body, labels: item.labels },
+      data: { repo: item.repo, issue, title: item.issue.title, body: item.issue.body, labels: item.labels },
     });
     const wc = await this.deps.clones.startAttempt({ repo: item.repo, job_id, attempt: 1, branch });
     await this.record({ type: "attempt-started", job_id, attempt: 1, actor: "orchestrator", caused_by: approval.id, data: { branch, base: wc.base } });
+  }
+
+  /**
+   * The issue's text changed after approval (ADR 0007): an edit by someone on `humans` counts as
+   * re-approval; anyone else's sends the Job to waiting with a Human request, holding the result
+   * of a Stage run still going.
+   */
+  private async edited(item: Extract<SourceItem, { kind: "edited" }>): Promise<void> {
+    const live = this.liveJob(item.repo, item.issue.number);
+    if (!live) return;
+    const events = this.deps.log.eventsFor(live.job_id);
+    const known = events.filter((e) => e.type === "issue-edited").map((e) => e.data.hash);
+    if (issueHash(approvalOf(events)) === item.hash || known.at(-1) === item.hash) return;
+    const allowed = item.by !== null && this.deps.config.current.humans.includes(item.by);
+    const actor = item.by ? (`human:${item.by}` as const) : ("orchestrator" as const);
+    const edit = await this.record({
+      ...jobEvent(live, null),
+      actor,
+      type: "issue-edited",
+      data: { hash: item.hash, title: item.issue.title, body: item.issue.body, allowed, ...(item.by && { by: item.by }) },
+    });
+    if (allowed) return;
+    const needed = await this.record({ ...jobEvent(live, edit.id), type: "job-reapproval-needed", data: item.by ? { editor: item.by } : {} });
+    const who = item.by ?? "Someone GitHub doesn't name";
+    await this.askHuman(this.context(this.deps.log.job(live.job_id)!), { kind: "approval", cause: "reapproval", text: `${who} edited the issue after it was approved, and isn't on humans.` }, needed.id);
   }
 
   /** A comment on a Job's issue: a Reply command is recorded, or logged as ignored; anything else is discussion. */
@@ -697,19 +775,11 @@ export class Orchestrator {
   /** Records the Stage run's ending and the Pipeline's next move. Returns the last event recorded. */
   private async route(ctx: StepContext, stage: ResolvedStage, outcome: Extract<StageOutcome, { kind: "result" | "error" }>, run: RunEnvelope, overBudget: boolean): Promise<FactoryEvent> {
     const { job, progress, resolution } = ctx;
+    const ended = await this.recordEnding(ctx, stage, outcome, run);
+    // The issue changed while this ran: the result is held, and the Pipeline moves only after re-approval.
+    if (this.heldForReapproval(job)) return ended;
     if (outcome.kind === "error") {
-      const errored = await this.record({
-        ...run,
-        type: "stage-errored",
-        data: {
-          stage: stage.id,
-          reason: outcome.reason,
-          message: outcome.message,
-          ...outcome.facts,
-          ...(outcome.where && { where: outcome.where }),
-          ...(outcome.session_id && { session_id: outcome.session_id }),
-        },
-      });
+      const errored = ended;
       // A hit Budget pauses the Job rather than retrying or asking (ADR 0010).
       if (overBudget) return errored;
       // Otherwise the Job is queued again and the Stage retries, unless a human must decide.
@@ -718,18 +788,12 @@ export class Orchestrator {
     }
 
     const { result } = outcome;
-    const data = { stage: stage.id, result, ...outcome.facts, ...outcome.extra };
-    if (result.verdict === "pass") return this.record({ ...run, type: "stage-passed", data });
+    if (result.verdict === "pass") return ended;
     if (result.verdict === "needs-human") {
-      const asked = await this.record({
-        ...run,
-        type: "stage-needs-human",
-        data: { ...data, question: result.question!.text, options: result.question!.options, ...(outcome.session_id && { session_id: outcome.session_id }) },
-      });
-      return this.askHuman(ctx, { kind: "question", text: result.question!.text, options: result.question!.options }, asked.id);
+      return this.askHuman(ctx, { kind: "question", text: result.question!.text, options: result.question!.options }, ended.id);
     }
 
-    const failed = await this.record({ ...run, type: "stage-failed", data: { ...data, summary: result.summary } });
+    const failed = ended;
     const repeated = result.findings.filter((f) => progress.bouncedRootCauses.has(f.root_cause)).map((f) => f.root_cause);
     if (!stage.on_fail) {
       return this.askHuman(ctx, { kind: "approval", cause: "no-bounce-target", text: `${stage.id} failed and has no on_fail Stage. ${result.summary}` }, failed.id);
@@ -743,9 +807,48 @@ export class Orchestrator {
     return this.record({ ...jobEvent(job, failed.id), type: "bounced", data: { from: stage.id, to: stage.on_fail, bounce: progress.bounces + 1 } });
   }
 
+  /** Records how a Stage run ended: its Run error, or its Verdict with what the Orchestrator measured. */
+  private recordEnding(ctx: StepContext, stage: ResolvedStage, outcome: Extract<StageOutcome, { kind: "result" | "error" }>, run: RunEnvelope): Promise<FactoryEvent> {
+    if (outcome.kind === "error") {
+      return this.record({
+        ...run,
+        type: "stage-errored",
+        data: {
+          stage: stage.id,
+          reason: outcome.reason,
+          message: outcome.message,
+          ...outcome.facts,
+          ...(outcome.where && { where: outcome.where }),
+          ...(outcome.session_id && { session_id: outcome.session_id }),
+        },
+      });
+    }
+    const { result } = outcome;
+    const data = { stage: stage.id, result, ...outcome.facts, ...outcome.extra };
+    if (result.verdict === "pass") return this.record({ ...run, type: "stage-passed", data });
+    if (result.verdict === "needs-human") {
+      return this.record({
+        ...run,
+        type: "stage-needs-human",
+        data: { ...data, question: result.question!.text, options: result.question!.options, ...(outcome.session_id && { session_id: outcome.session_id }) },
+      });
+    }
+    return this.record({ ...run, type: "stage-failed", data: { ...data, summary: result.summary } });
+  }
+
+  private heldForReapproval(job: JobState): boolean {
+    const now = this.deps.log.job(job.job_id);
+    return now?.status === "waiting" && now.reason === "reapproval";
+  }
+
   /** Sends the Job to waiting with a Human request, which the Mirrors post, and tells this machine about it. */
   private async askHuman(ctx: StepContext, data: { kind: "question" | "approval"; cause?: string; text: string; options?: string[] }, caused_by: string | null) {
     const { job } = ctx;
+    // A Job held for re-approval has its request already: anything else waits until that's answered.
+    if (data.cause !== "reapproval" && this.heldForReapproval(job)) {
+      const cause = caused_by ? this.deps.log.store.get(caused_by) : undefined;
+      if (cause) return cause;
+    }
     const stage = this.deps.log.job(job.job_id)?.stage;
     const rejectTo = rejectTarget(ctx.resolution.stages);
     const requested = await this.record({
@@ -789,6 +892,9 @@ export class Orchestrator {
 }
 
 type RunEnvelope = Pick<NewEvent, "job_id" | "attempt" | "stage_run_id" | "actor" | "caused_by">;
+
+/** The Job store cursor the Source poll carries on from. */
+const SOURCE_CURSOR = "source";
 
 /** A session's outcome, and whether the Orchestrator cut it off or the plan limit did. */
 interface Watched {
@@ -860,13 +966,32 @@ function pendingRetry(events: FactoryEvent[]): FactoryEvent | null {
   return events[retried]!;
 }
 
-/** The issue as last approved: at Job approval, or re-approved by re-labelling for a new Attempt. */
+/**
+ * The issue as last approved: at Job approval, re-approved by re-labelling for a new Attempt,
+ * or edited since by someone on `humans` (or by anyone, once a human `/approve`d the edit).
+ */
 function approvalOf(events: FactoryEvent[]): Approval {
-  const data = events.findLast((e) => e.type === "job-approved" || (e.type === "job-retried" && typeof e.data.body === "string"))?.data ?? {};
+  const byId = new Map(events.map((e) => [e.id, e]));
+  let text: Record<string, unknown> = {};
+  let labels: unknown = [];
+  let pendingEdit: Record<string, unknown> | null = null;
+  for (const e of events) {
+    if (e.type === "job-approved" || (e.type === "job-retried" && typeof e.data.body === "string")) {
+      text = e.data;
+      labels = e.data.labels ?? labels;
+      pendingEdit = null;
+    } else if (e.type === "issue-edited") {
+      if (e.data.allowed === true) text = e.data;
+      else pendingEdit = e.data;
+    } else if (e.type === "human-answered" && e.data.command === "approve" && pendingEdit && byId.get(String(e.data.request))?.data.cause === "reapproval") {
+      text = pendingEdit;
+      pendingEdit = null;
+    }
+  }
   return {
-    title: String(data.title ?? ""),
-    body: String(data.body ?? ""),
-    labels: Array.isArray(data.labels) ? (data.labels as string[]) : [],
+    title: String(text.title ?? ""),
+    body: String(text.body ?? ""),
+    labels: Array.isArray(labels) ? (labels as string[]) : [],
   };
 }
 
