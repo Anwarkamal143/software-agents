@@ -176,6 +176,10 @@ _Avoid_: workspace, project folder
 The set of Stages defined once in Factory configuration, which Pipelines refer to by name.
 _Avoid_: stage registry, templates
 
+**Baseline check**:
+Running a Target repo's verify commands on its default branch, which must pass before the Factory takes Jobs there. A red baseline would fail every Job.
+_Avoid_: smoke test, health check
+
 **Factory-wide value**:
 A setting that only the Factory layer may set, because it applies across all Target repos: the daily Budget, sign-in mode, Job store and Mirrors.
 _Avoid_: global (alone)
