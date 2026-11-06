@@ -41,8 +41,20 @@ The Stage instructions (prompts and skills) loaded into each agent session. It h
 _Avoid_: skill pack, playbook
 
 **Guard**:
-A block the Orchestrator places on a single agent action, such as reading a secret file or writing outside the Job's working copy. A Guard stops a tool call; a Policy governs a Job's progress.
+A block the Orchestrator places on a single agent action, such as reading a secret file or writing outside the Job's working copy. A Guard stops a tool call; a Policy governs a Job's progress. Every denial is recorded in the Event log.
 _Avoid_: hook (for the concept), Policy
+
+**Sandbox**:
+The operating-system confinement every command in a Stage run executes inside, agent or Check Stage alike, limiting what files it can write and what network it can reach. A run that can't be sandboxed doesn't run.
+_Avoid_: container, jail, isolation (alone)
+
+**Job approval**:
+An allowed person applying the ready label to an issue, which is what admits it to the Factory. Who wrote the issue doesn't matter; editing it afterwards needs approval again.
+_Avoid_: intake, acceptance, triage
+
+**Pre-push check**:
+What the Orchestrator verifies about an agent's local commits before it pushes them to the Job branch itself. Agents never push.
+_Avoid_: pre-commit hook, push gate
 
 ## Job lifecycle
 

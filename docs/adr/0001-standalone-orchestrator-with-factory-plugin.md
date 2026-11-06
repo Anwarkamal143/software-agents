@@ -5,7 +5,7 @@ The Factory is a standalone TypeScript **Orchestrator** that owns Job state, Sta
 ## Consequences
 
 - Guards (secret files, paths outside the working copy, destructive commands) are hook callbacks in the Orchestrator, passed in through the SDK. A Target repo's own hooks and `.mcp.json` servers are never loaded into Factory sessions, because Jobs check out untrusted branches.
-- Agents may only commit and push to their Job's branch. They never merge or push to the default branch.
+- Agents may only commit to their Job's branch in their own worktree. They never merge, and never push: the Orchestrator pushes their commits after Pre-push checks (amended by ADR 0007, which keeps every credential out of agent sessions).
 - Runs are bounded by the Orchestrator's own timer as well as the SDK's turn and dollar limits, because the SDK has no wall-clock timeout and its cost figures are estimates.
 - v1 is a foreground `factory` command (`run`, `status`, `stop`, `retry`), and it is the only writer of Job state. Running it as a background service comes later.
 - Subscription sign-in can't use `--bare`, so it needs another way to keep a Target repo's hooks and MCP config out. Researched in Subscription sign-in for Factory agent sessions (#12).
