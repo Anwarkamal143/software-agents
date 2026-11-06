@@ -74,6 +74,14 @@ _Avoid_: database, backend (alone), source of truth
 A read-only copy of Job state kept for visibility, such as GitHub labels and status comments. It never decides anything.
 _Avoid_: replica, sync, projection (for GitHub)
 
+**Human request**:
+What the Factory posts when a Job goes to waiting: a question with lettered options, or a request for approval, along with the Reply commands that answer it.
+_Avoid_: prompt, ping, escalation
+
+**Reply command**:
+The only form in which a human's reply is read back: a fixed command from an allowed person, such as answer, approve, reject or cancel. Free text is never interpreted.
+_Avoid_: answer comment, response
+
 ## Stages and pipelines
 
 **Pipeline**:
