@@ -160,6 +160,16 @@
         "risk_rules_off": { "type": "array", "items": { "type": "string" } }
       }
     },
+    "when": {
+      "description": "Run the Stage only if the Job has any of `labels`, or the Attempt changed a file matching any of `paths`; otherwise it is skipped, and the skip is recorded.",
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "labels": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+        "paths": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }
+      }
+    },
     "stage": {
       "type": "object",
       "required": ["kind"],
@@ -173,7 +183,8 @@
           "instructions": { "type": "string", "minLength": 1 },
           "tools": { "enum": ["read-only", "write-branch"] },
           "model": { "type": "string", "minLength": 1 },
-          "on_fail": { "type": "string" }
+          "on_fail": { "type": "string" },
+          "when": { "$ref": "#/definitions/when" }
         }
       },
       "else": {
@@ -182,7 +193,8 @@
         "properties": {
           "kind": { "const": "check" },
           "run": { "type": "string", "minLength": 1, "description": "Name of the Target repo's `commands` list to run." },
-          "on_fail": { "type": "string" }
+          "on_fail": { "type": "string" },
+          "when": { "$ref": "#/definitions/when" }
         }
       }
     },

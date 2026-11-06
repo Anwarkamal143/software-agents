@@ -35,6 +35,11 @@ export class EventLog {
     return appended;
   }
 
+  /** Every event of one Job, in seq order. */
+  eventsFor(job_id: string): FactoryEvent[] {
+    return this.store.read().filter((e) => e.job_id === job_id);
+  }
+
   job(job_id: string): JobState | undefined {
     this.catchUp();
     return this.projection.get(job_id);

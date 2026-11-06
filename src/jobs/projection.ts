@@ -43,7 +43,7 @@ const MOVES: Record<string, Move> = {
   "stage-interrupted": { from: ["running"], to: "queued" },
   "stage-needs-human": { from: ["running"], to: "waiting", reason: () => "question" },
   bounced: { from: ["queued"], to: "queued" },
-  "human-requested": { from: LIVE, to: "waiting", reason: (d) => text(d.kind) },
+  "human-requested": { from: LIVE, to: "waiting", reason: (d) => text(d.cause) ?? text(d.kind) },
   "human-answered": { from: ["waiting", "paused"], to: "queued" },
   "job-reapproval-needed": { from: LIVE, to: "waiting", reason: () => "reapproval" },
   // Budgets are checked before a Stage run, and a hard hit ends the run first (stage-errored),
