@@ -1,8 +1,6 @@
 import type { FactoryEvent } from "../events/envelope.js";
 import { ASK_CAUSES } from "../policies/merge-gate.js";
-import { FACTORY_MARKER } from "./commands.js";
-
-const LETTERS = ["A", "B", "C"] as const;
+import { FACTORY_MARKER, OPTION_LETTERS as LETTERS } from "./commands.js";
 const MAX_QUESTION = 2000;
 const MAX_OPTION = 500;
 
@@ -18,7 +16,7 @@ export function renderHumanRequest(event: FactoryEvent): string {
   const job = event.job_id!;
   const d = event.data;
   const stage = typeof d.stage === "string" ? d.stage : "the Stage";
-  const question = clean(String(d.text ?? ""), MAX_QUESTION);
+  const question = defuseAgentText(String(d.text ?? ""), MAX_QUESTION);
   const lines = [FACTORY_MARKER, `<!-- factory:job=${job} request=${event.id} -->`];
 
   let options: string[];
@@ -28,7 +26,7 @@ export function renderHumanRequest(event: FactoryEvent): string {
     const given = ((d.options as string[] | undefined) ?? []).slice(0, LETTERS.length);
     lines.push(`**The Factory needs an answer** · Stage \`${stage}\` · Job \`${job}\``);
     options = [
-      ...given.map((o, i) => `- **${LETTERS[i]}.** ${clean(o, MAX_OPTION)}: ${stage} carries on with this answer.`),
+      ...given.map((o, i) => `- **${LETTERS[i]}.** ${defuseAgentText(o, MAX_OPTION)}: ${stage} carries on with this answer.`),
       `- **other: <text>**: ${stage} carries on with your own answer.`,
     ];
     const answers = [...given.map((_, i) => LETTERS[i]!), "other: <text>"];
@@ -64,7 +62,7 @@ function approveConsequence(cause: string, stage: string): string {
  * Agent-written text the Factory posts: capped, with Factory markers defused and @mentions
  * and Reply commands set in code, so the post neither pings anyone nor reads as a command.
  */
-export function clean(text: string, max: number): string {
+export function defuseAgentText(text: string, max: number): string {
   const capped = text.length > max ? `${text.slice(0, max - 1)}…` : text;
   return capped
     .replaceAll("<!--", "&lt;!--")

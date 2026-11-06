@@ -167,8 +167,8 @@ export class Orchestrator {
     if (!live) return;
     const { comment } = item;
     const reply = { job_id: live.job_id, channel: "github" as const, by: comment.by, created_at: comment.created_at, comment_id: comment.id };
-    if (parsed.kind === "malformed") return void (await this.mirror(recordMalformedReply(this.deps.log, reply, parsed.why)));
     const humans = this.deps.config.current.humans;
+    if (parsed.kind === "malformed") return void (await this.mirror(recordMalformedReply(this.deps.log, reply, parsed.why, humans)));
     // Write access is asked only about people on `humans`; nobody else's reply counts anyway.
     const writeAccess = humans.includes(comment.by) && (await this.deps.source.hasWriteAccess(item.repo, comment.by));
     const outcome = recordReply(this.deps.log, { ...reply, command: parsed.command }, { humans, writeAccess });
@@ -284,7 +284,7 @@ export class Orchestrator {
       stage_run_id,
       actor: "orchestrator",
       caused_by: ctx.cause,
-      // Resuming with an answer is the same Stage carrying on, not a retry (ADR 0010).
+      // Resuming with an answer is the same Stage carrying on: it is not retried (ADR 0010).
       ...(resume
         ? { type: "stage-resumed", data: { stage: stage.id, session_id: resume.session_id, answer: resume.answered, config_hash: this.deps.config.hash } }
         : { type: "stage-started", data: { stage: stage.id, config_hash: this.deps.config.hash } }),
@@ -299,14 +299,14 @@ export class Orchestrator {
    * The session to resume with a human's answer: the one that asked, if this is its Stage and
    * it's under seven days old. Otherwise the Stage runs fresh with the Q&A in its brief.
    */
-  private resumable(ctx: StepContext, stage: ResolvedStage): (PendingAnswer & { session_id: string }) | null {
+  private resumable(ctx: StepContext, stage: ResolvedStage): Resumable | null {
     const pending = ctx.progress.pendingAnswer;
     if (stage.kind !== "agent" || !pending?.session_id || pending.answer.stage !== stage.id) return null;
     if (this.now().getTime() - Date.parse(pending.sessionStartedAt) > RESUME_MAX_AGE_MS) return null;
     return { ...pending, session_id: pending.session_id };
   }
 
-  private async runAgent(ctx: StepContext, stage: ResolvedStage, stage_run_id: string, run: RunEnvelope, resume: (PendingAnswer & { session_id: string }) | null): Promise<StageOutcome> {
+  private async runAgent(ctx: StepContext, stage: ResolvedStage, stage_run_id: string, run: RunEnvelope, resume: Resumable | null): Promise<StageOutcome> {
     const { job, wc, progress } = ctx;
     const brief: StageBrief = {
       stage: stage.id,
@@ -539,6 +539,9 @@ type RunEnvelope = Pick<NewEvent, "job_id" | "attempt" | "stage_run_id" | "actor
 
 /** The envelope of an event the Orchestrator records about a Job's current Attempt. */
 const jobEvent = (job: JobState, caused_by: string | null) => ({ job_id: job.job_id, attempt: job.attempt, actor: "orchestrator" as const, caused_by });
+
+/** A pending answer whose asking session can be resumed. */
+type Resumable = PendingAnswer & { session_id: string };
 
 /** Events that record what happened around a Job without moving it: never the cause of its next step. */
 const NOT_CAUSES = new Set(["reply-ignored", "human-reminded", "transition-rejected"]);

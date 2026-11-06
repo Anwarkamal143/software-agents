@@ -122,6 +122,14 @@ describe("recordReply", () => {
     expect(log.store.read().find((e) => e.type === "human-answered")?.data.option).toBe("A");
   });
 
+  test("a reply already told it came too late isn't told again when it's edited", () => {
+    const { log } = waitingLog("approval");
+    recordReply(log, cli({ command: "approve" }));
+    expect(recordReply(log, github({ command: "cancel" }, { comment_id: "c-2" }), access)).toMatchObject({ why: "already-answered" });
+
+    expect(recordReply(log, github({ command: "approve" }, { comment_id: "c-2" }), access)).toMatchObject({ why: "edited-after-recording" });
+  });
+
   test("an answer to a new request must come after that request, not just the first one", () => {
     const { log } = waitingLog("question");
     recordReply(log, github({ command: "answer", option: "A" }), access);

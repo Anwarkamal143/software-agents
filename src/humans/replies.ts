@@ -1,6 +1,6 @@
 import type { FactoryEvent, NewEvent } from "../events/envelope.js";
 import type { EventLog } from "../jobs/event-log.js";
-import type { ReplyCommand } from "./commands.js";
+import { OPTION_LETTERS, type ReplyCommand } from "./commands.js";
 
 /** One Reply command, from a GitHub comment or the local `factory` CLI. */
 export interface Reply {
@@ -20,6 +20,7 @@ export interface ReplyAccess {
   writeAccess: boolean;
 }
 
+/** Why a Reply command didn't count. */
 export type IgnoredWhy =
   | "not-allowed"
   | "no-write-access"
@@ -31,11 +32,19 @@ export type IgnoredWhy =
   | "no-such-option"
   | "malformed";
 
+/** What became of one Reply command, and the event recorded for it. */
 export type ReplyOutcome = { kind: "answered"; event: FactoryEvent } | { kind: "ignored"; why: IgnoredWhy; event: FactoryEvent };
 
 /** Which commands answer which kind of Human request. `/cancel` answers both. */
 const ANSWERS = { question: ["answer", "cancel"], approval: ["approve", "reject", "cancel"] } as const;
-const LETTERS = ["A", "B", "C"];
+
+/** The envelope and source fields of an event about `reply`. */
+function about(reply: Omit<Reply, "command">) {
+  return {
+    actor: reply.channel === "github" ? (`human:${reply.by}` as const) : ("cli" as const),
+    source: { channel: reply.channel, ...(reply.by && { by: reply.by }), ...(reply.comment_id && { comment_id: reply.comment_id }) },
+  };
+}
 
 /**
  * Decides whether a Reply command answers the Job's open Human request, and records the
@@ -47,13 +56,8 @@ export function recordReply(log: EventLog, reply: Reply, access?: ReplyAccess): 
   return log.exclusive(() => {
     const events = log.eventsFor(reply.job_id);
     const request = events.findLast((e) => e.type === "human-requested");
-    const envelope = {
-      job_id: reply.job_id,
-      attempt: request?.attempt ?? events.at(-1)?.attempt ?? null,
-      actor: reply.channel === "github" ? (`human:${reply.by}` as const) : ("cli" as const),
-      caused_by: request?.id ?? null,
-    };
-    const source = { channel: reply.channel, ...(reply.by && { by: reply.by }), ...(reply.comment_id && { comment_id: reply.comment_id }) };
+    const { actor, source } = about(reply);
+    const envelope = { job_id: reply.job_id, attempt: request?.attempt ?? events.at(-1)?.attempt ?? null, actor, caused_by: request?.id ?? null };
     const ignore = (why: IgnoredWhy): ReplyOutcome => ({
       kind: "ignored",
       why,
@@ -63,7 +67,8 @@ export function recordReply(log: EventLog, reply: Reply, access?: ReplyAccess): 
     if (reply.channel === "github") {
       if (!access || !reply.by || !access.humans.includes(reply.by)) return ignore("not-allowed");
       if (!access.writeAccess) return ignore("no-write-access");
-      if (reply.comment_id && events.some((e) => e.type === "human-answered" && e.data.comment_id === reply.comment_id)) {
+      // An edit re-delivers a comment: once it was recorded, or told it came too late, it changes nothing.
+      if (reply.comment_id && events.some((e) => e.data.comment_id === reply.comment_id && (e.type === "human-answered" || e.data.why === "already-answered"))) {
         return ignore("edited-after-recording");
       }
     }
@@ -80,7 +85,7 @@ export function recordReply(log: EventLog, reply: Reply, access?: ReplyAccess): 
       const options = (request.data.options as string[] | undefined) ?? [];
       if (command.option === "other") text = command.text;
       else {
-        text = options[LETTERS.indexOf(command.option)];
+        text = options[OPTION_LETTERS.indexOf(command.option)];
         if (text === undefined) return ignore("no-such-option");
       }
     } else if (command.command === "reject") text = command.text;
@@ -94,14 +99,18 @@ export function recordReply(log: EventLog, reply: Reply, access?: ReplyAccess): 
   });
 }
 
-/** Logs a comment that looked like a Reply command but didn't parse. */
-export function recordMalformedReply(log: EventLog, reply: Omit<Reply, "command">, detail: string): FactoryEvent {
-  const last = log.eventsFor(reply.job_id).at(-1);
+/**
+ * Logs a comment that looked like a Reply command but didn't parse. Only someone on `humans`
+ * gets told it was malformed; anyone else's is simply not-allowed (ADR 0007).
+ */
+export function recordMalformedReply(log: EventLog, reply: Omit<Reply, "command">, detail: string, humans: string[]): FactoryEvent {
+  const { actor, source } = about(reply);
+  const why: IgnoredWhy = reply.channel === "github" && !humans.includes(reply.by ?? "") ? "not-allowed" : "malformed";
   return log.record({
     job_id: reply.job_id,
-    attempt: last?.attempt ?? null,
-    actor: reply.channel === "github" ? `human:${reply.by}` : "cli",
+    attempt: log.eventsFor(reply.job_id).at(-1)?.attempt ?? null,
+    actor,
     type: "reply-ignored",
-    data: { why: "malformed", detail, channel: reply.channel, ...(reply.by && { by: reply.by }), ...(reply.comment_id && { comment_id: reply.comment_id }) },
+    data: { why, ...(why === "malformed" && { detail }), ...source },
   });
 }

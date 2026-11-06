@@ -90,8 +90,8 @@ export const V1_EVENTS: EventRegistry = {
   "human-requested": {
     version: 2,
     // `cause` names why the Factory needs judgement, such as bounce-cap or repeated-root-cause;
-    // `stage` is the Stage the Job was at. A question has two or three options (A–C).
-    data: obj({ kind: { enum: ["question", "approval"] } }, { text: str, options: { type: "array", maxItems: 3, items: str }, cause: str, stage: str, reject_to: str }),
+    // `stage` is the Stage the Job was at. A question has the asking Stage's two or three options (A–C).
+    data: obj({ kind: { enum: ["question", "approval"] } }, { text: str, options: { type: "array", items: str }, cause: str, stage: str, reject_to: str }),
     upgrades: { 1: sameData },
   },
   // `request` is the human-requested event answered; `text` is the chosen option's text, the

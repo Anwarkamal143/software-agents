@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { loadConfig } from "../config/load.js";
 import { parseReplyCommand } from "../humans/commands.js";
-import { recordReply } from "../humans/replies.js";
+import { recordReply, type IgnoredWhy } from "../humans/replies.js";
 import { EventLog } from "../jobs/event-log.js";
 import { homePaths } from "../home.js";
 import { computeJobs, type JobState } from "../jobs/projection.js";
@@ -119,14 +119,20 @@ function reply(command: string, args: string[], io: CliIo): number {
       io.stdout.write(`Recorded /${command} for Job ${job_id}. The Factory acts on it at its next step.\n`);
       return 0;
     }
-    io.stderr.write(`${IGNORED_MESSAGE[outcome.why]?.(job_id) ?? `Not recorded: ${outcome.why}.`}\n`);
+    io.stderr.write(`${IGNORED_MESSAGE[outcome.why](job_id)}\n`);
     return 1;
   } finally {
     store.close();
   }
 }
 
-const IGNORED_MESSAGE: Partial<Record<string, (job: string) => string>> = {
+/** What the CLI says when its reply doesn't count. The GitHub-only reasons never reach it. */
+const IGNORED_MESSAGE: Record<IgnoredWhy, (job: string) => string> = {
+  "not-allowed": () => "Not recorded: not allowed.",
+  "no-write-access": () => "Not recorded: no write access.",
+  "edited-after-recording": () => "Not recorded: that reply was already recorded.",
+  "before-request": (job) => `Job ${job}'s request is newer than this reply.`,
+  malformed: () => "Not a Reply command.",
   "already-answered": (job) => `Job ${job}'s request was already answered.`,
   "not-waiting": (job) => `Job ${job} isn't waiting on a Human request.`,
   "wrong-command": () => "That command doesn't answer this request: a question takes answer or cancel, an approval takes approve, reject or cancel.",

@@ -6,7 +6,9 @@
 /** Hidden in every comment the Factory posts. A comment carrying it is never parsed as a reply. */
 export const FACTORY_MARKER = "<!-- factory -->";
 
-export type OptionLetter = "A" | "B" | "C";
+/** A question's options are lettered in this order. */
+export const OPTION_LETTERS = ["A", "B", "C"] as const;
+export type OptionLetter = (typeof OPTION_LETTERS)[number];
 
 export type ReplyCommand =
   | { command: "answer"; option: OptionLetter }
@@ -57,8 +59,8 @@ export function parseReplyCommand(comment: string): ParsedReply {
         const other = rest.slice("other:".length).trim();
         return other ? ok({ command, option: "other", text: other }) : malformed("/answer other: needs some text");
       }
-      const letter = rest.toUpperCase();
-      return letter === "A" || letter === "B" || letter === "C" ? ok({ command, option: letter }) : malformed(NEEDS_OPTION);
+      const letter = OPTION_LETTERS.find((l) => l === rest.toUpperCase());
+      return letter ? ok({ command, option: letter }) : malformed(NEEDS_OPTION);
     }
   }
 }

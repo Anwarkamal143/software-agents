@@ -51,7 +51,7 @@ describe("Orchestrator: Human requests and Reply commands", () => {
     expect(f.log.store.read().at(-1)).toMatchObject({ type: "checkpoint-evaluated" });
   });
 
-  test("after 7 days the answer starts a fresh run of the same Stage with the Q&A in its brief", async () => {
+  test("after 7 days the answer starts a fresh Stage run of the same Stage with the Q&A in its brief", async () => {
     const time = clock();
     const f = fakeFactory(new ScriptedAgent({ triage: [asks("REST or GraphQL?", ["REST", "GraphQL"])], build: [building] }), undefined, { now: time.now });
     f.source.push(approved(7));
@@ -148,6 +148,7 @@ describe("Orchestrator: Human requests and Reply commands", () => {
       comment(7, "/answer A", { by: "mallory" }),
       comment(7, "/answer A", { created_at: "2020-01-01T00:00:00.000Z" }),
       comment(7, "/answer maybe"),
+      comment(7, "/answer maybe", { by: "mallory" }),
       comment(7, "Thanks, looking now."),
     );
     await f.orchestrator.runUntilIdle();
@@ -157,8 +158,10 @@ describe("Orchestrator: Human requests and Reply commands", () => {
       ["human:mallory", "not-allowed"],
       ["human:alice", "before-request"],
       ["human:alice", "malformed"],
+      // A stranger isn't told how to get it right.
+      ["human:mallory", "not-allowed"],
     ]);
-    expect(f.mirror.summary().slice(-3).map(([type, status]) => [type, status])).toEqual(Array(3).fill(["reply-ignored", "waiting"]));
+    expect(f.mirror.summary().slice(-4).map(([type, status]) => [type, status])).toEqual(Array(4).fill(["reply-ignored", "waiting"]));
     expect(f.onlyJob()).toMatchObject({ status: "waiting" });
     expect(f.agent.stagesRun()).toEqual(["triage"]);
   });
