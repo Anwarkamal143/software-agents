@@ -14,5 +14,11 @@ Every Stage run reads text that someone other than you may have written, so the 
 
 - Reply commands (ADR 0006) also need the sender to still have write access, and count only in comments created after the Human request they answer.
 - Check Stages are not trusted just because no agent runs them: they execute code an agent wrote, so they share the Sandbox.
-- Whether the Agent SDK, `disableAllHooks` and the Sandbox actually behave as required is verified by a prototype before build, not assumed.
+- Verified by prototype (SDK isolation and sandbox verification, #14), which fixes how the Agent adapter applies these limits:
+  - Network is closed twice: `strictAllowlist: true` always, and `canUseTool` denies every `SandboxNetworkAccess` ask. An empty `allowedDomains` alone turns unknown hosts into asks, not blocks.
+  - Guards are `PreToolUse` callbacks only. `canUseTool` is skipped for tools named in `allowedTools`, so it handles sandbox asks and nothing else.
+  - The Factory plugin carries no hooks: `managedSettings.disableAllHooks` blocks them along with the Target repo's, while callback Guards still fire.
+  - The adapter never uses `claude -p` or `--safe-mode`, which still run a Target repo's `apiKeyHelper` and apply its `env` block.
+  - Check Stages use `sandbox-runtime` spawned asynchronously (its network proxy runs in the Orchestrator's process).
+  - The Orchestrator refuses to start Stage runs unless both sandboxes report available, so fail-closed is a self-check, not only an SDK default.
 - Containers per Stage run are deferred to the cloud-executor seam.
