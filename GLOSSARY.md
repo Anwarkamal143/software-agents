@@ -83,8 +83,12 @@ Sending a Job back to an earlier Stage because a later Stage failed it, carrying
 _Avoid_: rebuild, rework, rejection
 
 **Event log**:
-The append-only record of everything that happened to every Job, each entry with its cause. Job state is computed from it.
+The append-only record of everything that happened to every Job, one entry per fact, whose type is its cause. Job state is computed from it.
 _Avoid_: history, audit log, activity feed
+
+**Transcript**:
+The raw record of one Stage run's agent session: every message, tool call and token count. Events point to it; Job state never depends on it.
+_Avoid_: log (alone), trace, session history
 
 **Job store**:
 The single authoritative home of the Event log. Every transition is decided against it.
