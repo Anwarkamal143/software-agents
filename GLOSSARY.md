@@ -132,6 +132,10 @@ _Avoid_: output, report
 A Stage's claim of pass, fail or needs-human. It decides where the Pipeline goes next and is never proof.
 _Avoid_: confidence, status
 
+**Run error**:
+A Stage run that broke rather than judged: a crash, a timeout, a hard Budget hit or a result that doesn't fit the schema. It is retried; a fail Verdict is not a Run error and Bounces instead.
+_Avoid_: failure (alone), stage failure, crash (for all of these)
+
 **Evidence**:
 Proof the Orchestrator produced itself, tied to an exact head commit, such as Check Stage output. Only Evidence can satisfy a merge gate.
 _Avoid_: proof (from an agent), test claims
