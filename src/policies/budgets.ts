@@ -46,7 +46,8 @@ export function budgetAfterStageRun({ budget, facts, errorReason }: { budget: Bu
   if (spent > budget.usd) return hit(`an estimated ${usd(spent)}, over its ${usd(budget.usd)} Budget`);
   if ((facts.turns ?? 0) > budget.turns) return hit(`${facts.turns} turns, over its ${budget.turns}-turn Budget`);
   const minutes = (facts.duration_ms ?? 0) / 60_000;
-  if (minutes > budget.minutes) return hit(`${Math.round(minutes)} minutes, over its ${budget.minutes}-minute Budget`);
+  // Running out of wall-clock is a timeout, which is retried (ADR 0010), not a hard Budget hit.
+  if (minutes > budget.minutes && errorReason !== "timeout") return hit(`${Math.round(minutes)} minutes, over its ${budget.minutes}-minute Budget`);
   if (errorReason === "budget") return hit("up its Budget");
   return null;
 }

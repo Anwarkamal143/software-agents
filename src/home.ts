@@ -10,4 +10,8 @@ export const homePaths = (home: string) => ({
   config: join(home, "factory.yaml"),
   jobStore: join(home, "factory.db"),
   artifacts: join(home, "artifacts"),
+  /** One NDJSON Transcript per Stage run, under a folder per Job (ADR 0009). */
+  transcripts: join(home, "transcripts"),
+  /** Every Attempt's Working copy, under a folder per Job (ADR 0008). */
+  work: join(home, "work"),
 });

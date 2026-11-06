@@ -40,6 +40,42 @@ describe("factory status", () => {
     ]);
   });
 
+  test("says when the Factory is paused, and why", async () => {
+    const home = homeWithJobs();
+    const store = openSqliteJobStore(join(home, "factory.db"));
+    store.append({ type: "factory-paused", actor: "orchestrator", data: { reason: "sandbox-unavailable", message: "bubblewrap is not installed" } });
+    store.close();
+
+    const { stdout } = await cli(home, "status");
+
+    expect(stdout.split("\n")[0]).toBe("The Factory is paused (sandbox-unavailable): bubblewrap is not installed");
+  });
+
+  test("says until when the plan limit parks the Factory", async () => {
+    const home = homeWithJobs();
+    const store = openSqliteJobStore(join(home, "factory.db"));
+    store.append({ type: "plan-limit-hit", actor: "orchestrator", data: { status: "rejected", resets_at: "2026-11-07T18:00:00.000Z" } });
+    store.close();
+
+    const { stdout } = await cli(home, "status");
+
+    expect(stdout.split("\n")[0]).toBe("The Factory is paused (plan-limit) until 2026-11-07T18:00:00.000Z.");
+  });
+
+  test("warns about a Job queued for over a day, without calling it stuck", async () => {
+    const home = tmpHome();
+    const store = openSqliteJobStore(join(home, "factory.db"));
+    const longAgo = new Date(Date.now() - 26 * 60 * 60 * 1000).toISOString();
+    store.append({ type: "job-approved", job_id: "job-q", actor: "human:alice", at: longAgo, data: { repo: "acme/web-app", issue: 9 } });
+    store.append({ type: "attempt-started", job_id: "job-q", attempt: 1, actor: "orchestrator", at: longAgo, data: { branch: "factory/9" } });
+    store.close();
+
+    const { stdout } = await cli(home, "status");
+
+    expect(stdout).toContain("job-q  acme/web-app#9  queued");
+    expect(stdout.trimEnd().split("\n").at(-1)).toBe("warning: Job job-q has been queued for over a day.");
+  });
+
   test("says so when there are no Jobs yet", async () => {
     const { code, stdout } = await cli(tmpHome(), "status");
     expect(code).toBe(0);

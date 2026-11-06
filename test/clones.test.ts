@@ -146,4 +146,18 @@ describe("Clones", () => {
     await Promise.all(attempts.map(async (wc) => clones.push(wc, await clones.receive(wc), { remoteHead: null })));
     expect(agentGit(remote, "branch", "--format=%(refname:short)").split("\n").sort()).toEqual(["factory/1", "factory/2", "factory/3", "factory/4", "main"]);
   });
+
+  test("deleteBranches deletes Job branches on the remote, and counts one already gone as deleted", async () => {
+    const { remote, clones } = setup();
+    const wc = await clones.startAttempt({ repo: "acme/web-app", job_id: "job-1", attempt: 1, branch: "factory/7" });
+    writeIn(wc.path, "a.txt", "a\n");
+    const head = commitAll(wc.path);
+    await clones.push(wc, await clones.receive(wc), { remoteHead: null });
+    expect(agentGit(remote, "rev-parse", "factory/7")).toBe(head);
+
+    const gone = await clones.deleteBranches("acme/web-app", ["factory/7", "factory/never-pushed"]);
+
+    expect(gone).toEqual(["factory/7", "factory/never-pushed"]);
+    expect(agentGit(remote, "branch", "--list", "factory/*")).toBe("");
+  });
 });

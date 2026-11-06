@@ -1,6 +1,6 @@
 import picomatch from "picomatch";
 import { ulid } from "ulid";
-import type { AgentAdapter, MeasuredFacts, RunErrorReason } from "../agents/adapter.js";
+import type { AgentAdapter, AgentRunEvents, AgentRunOutcome, AgentRunRequest, MeasuredFacts, RateLimitInfo, RunErrorReason } from "../agents/adapter.js";
 import type { ConfigHolder } from "../config/holder.js";
 import { resolve, type Resolution, type ResolvedStage } from "../config/resolve.js";
 import type { StageCondition } from "../config/types.js";
@@ -22,6 +22,7 @@ import { SandboxUnavailable, type CheckRun, type CheckRunner } from "../stages/c
 import { parseStageResult, STAGE_RESULT_SCHEMA, type StageResult } from "../stages/result.js";
 import type { ArtifactStore } from "../store/artifact-store.js";
 import { attemptProgress, type AttemptProgress, type PendingAnswer } from "./progress.js";
+import { afterRunError, retryRun } from "./retries.js";
 
 export interface OrchestratorDeps {
   log: EventLog;
@@ -40,6 +41,18 @@ export interface OrchestratorDeps {
   now?: () => Date;
   /** Tells whoever is at this machine about each Human request. */
   notifier?: Notifier;
+  /** Stuck detection (ADR 0010). Defaults: 10 minutes idle; the wall-clock is the Stage-run Budget's minutes. */
+  limits?: { idleMs?: number; wallClockMs?: number };
+  /** Waits between transient retries. */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/** The Job store can't be written: nothing can be decided, so the Orchestrator stops (ADR 0010). */
+export class JobStoreUnwritable extends Error {
+  override name = "JobStoreUnwritable";
+  constructor(cause: unknown) {
+    super(`The Job store can't be written, so the Orchestrator stops: ${cause instanceof Error ? cause.message : String(cause)}`, { cause });
+  }
 }
 
 /** The approved issue, as recorded on `job-approved`. */
@@ -51,11 +64,18 @@ interface Approval {
 
 type StageOutcome =
   | { kind: "result"; result: StageResult; facts: Partial<MeasuredFacts>; extra?: Record<string, unknown>; session_id?: string }
-  | { kind: "error"; reason: RunErrorReason | "invalid-result"; message: string; facts: Partial<MeasuredFacts> }
+  | { kind: "error"; reason: RunErrorReason | "invalid-result"; message: string; facts: Partial<MeasuredFacts>; session_id?: string; where?: string }
   /** A Pre-push check failed: already recorded, and the Job is waiting. */
   | { kind: "stopped" }
+  /** The Orchestrator is stopping: nothing more is recorded. */
+  | { kind: "abandoned" }
+  /** The run was cut off for something outside the Stage: it ends without a Verdict and isn't counted. */
+  | { kind: "interrupted"; reason: "guard-denials" | "plan-limit"; message: string; session_id?: string }
   /** A Factory fault (ADR 0010): the run ends without a Verdict and the whole Factory pauses. */
-  | { kind: "fault"; reason: "sandbox-unavailable" | "check-secret-missing"; message: string };
+  | { kind: "fault"; reason: "sandbox-unavailable" | "check-secret-missing" | "sign-in-mismatch"; message: string };
+
+/** Why the Orchestrator cut a session off. */
+type Cutoff = "idle" | "wall-clock" | "guard-denials" | "stopping";
 
 /** Everything one step of one Job is decided from. */
 interface StepContext {
@@ -63,6 +83,8 @@ interface StepContext {
   approval: Approval;
   resolution: Resolution;
   progress: AttemptProgress;
+  /** The current Attempt's events, in seq order. */
+  events: FactoryEvent[];
   wc: WorkingCopy;
   /** The Job's latest event: whatever this step does, it happens because of it. */
   cause: string | null;
@@ -79,6 +101,8 @@ type Plan = { kind: "instant"; run: () => Promise<void> } | { kind: "stage-run";
  */
 export class Orchestrator {
   private cursor: string | null = null;
+  /** Aborted once the Orchestrator must stop: every session is cut off and nothing new starts. */
+  private readonly stopping = new AbortController();
 
   constructor(private readonly deps: OrchestratorDeps) {}
 
@@ -88,20 +112,36 @@ export class Orchestrator {
    * queued Jobs start resumed first, then first come, first served by Job approval (ADR 0008).
    */
   async runUntilIdle(): Promise<void> {
-    await this.poll();
-    await this.remind();
     const running = new Map<string, { repo: string; done: Promise<void> }>();
-    // A Stage run that throws is a fault for #27 to classify; until then, let the others
-    // finish rather than abandon them mid-run, and rethrow once nothing is running.
+    // A Stage run that throws ends this pass: the others finish (or, if the Job store is
+    // unwritable, are cut off), and the first error is rethrown once nothing is running.
     const faults: unknown[] = [];
+    const fault = (err: unknown) => {
+      if (err instanceof JobStoreUnwritable) this.stopping.abort();
+      faults.push(err);
+    };
+    try {
+      await this.poll();
+      await this.remind();
+    } catch (err) {
+      fault(err);
+    }
     for (;;) {
       let moved = false;
-      // After a fault, start nothing new; only let what's running finish.
-      for (const job of faults.length ? [] : this.queue(running)) {
-        const plan = await this.plan(job);
+      // After a fault, or once stopping, start nothing new; only let what's running finish.
+      const halted = faults.length > 0 || this.stopping.signal.aborted;
+      if (!halted) await this.releasePlanLimit().catch(fault);
+      for (const job of halted ? [] : this.queue(running)) {
+        let plan: Plan | null;
+        try {
+          plan = await this.plan(job);
+          if (plan?.kind === "instant") await plan.run();
+        } catch (err) {
+          fault(err);
+          break;
+        }
         if (!plan) continue;
         if (plan.kind === "instant") {
-          await plan.run();
           moved = true;
           break; // the queue may look different now
         }
@@ -109,7 +149,7 @@ export class Orchestrator {
         if (running.size >= this.deps.config.current.max_running || inRepo >= plan.repoLimit) continue;
         const done = plan
           .run()
-          .catch((err: unknown) => void faults.push(err))
+          .catch(fault)
           .finally(() => running.delete(job.job_id));
         running.set(job.job_id, { repo: job.repo, done });
         moved = true;
@@ -121,6 +161,60 @@ export class Orchestrator {
       }
       await Promise.race([...running.values()].map((r) => r.done));
     }
+  }
+
+  /**
+   * Startup after the Event log has been replayed (ADR 0010): every Stage run still marked
+   * running was cut off when the last Orchestrator died, so it is recorded as interrupted,
+   * naming its session if it reported one; the next run resumes that session once, or reruns.
+   * Jobs parked by the plan limit stay parked until it resets.
+   */
+  async start(): Promise<void> {
+    const started = await this.record({ type: "factory-started", actor: "orchestrator" });
+    for (const job of this.deps.log.jobs().filter((j) => j.status === "running")) {
+      const events = this.deps.log.eventsFor(job.job_id);
+      const run = events.findLast((e) => e.type === "stage-started" || e.type === "stage-resumed");
+      if (!run) continue;
+      const reported = events.findLast((e) => e.type === "session-started" && e.stage_run_id === run.stage_run_id)?.data.session_id;
+      const session_id = reported ?? (run.type === "stage-resumed" ? run.data.session_id : undefined);
+      await this.record({
+        job_id: job.job_id,
+        attempt: run.attempt,
+        stage_run_id: run.stage_run_id,
+        actor: "orchestrator",
+        caused_by: started.id,
+        type: "stage-interrupted",
+        data: { stage: String(run.data.stage), ...(typeof session_id === "string" && { session_id }) },
+      });
+    }
+  }
+
+  /**
+   * Stops at once, as a kill would: every session is cut off and nothing more is recorded for
+   * it. The next `start()` finds those Stage runs unfinished.
+   */
+  stop(): void {
+    this.stopping.abort();
+  }
+
+  /** A plan limit parks the Factory until its reset time (ADR 0010); then Jobs carry on. */
+  private async releasePlanLimit(): Promise<void> {
+    const pause = this.deps.log.factoryPause();
+    if (pause?.type !== "plan-limit-hit") return;
+    const resetsAt = typeof pause.data.resets_at === "string" ? Date.parse(pause.data.resets_at) : Date.parse(pause.at) + PLAN_LIMIT_FALLBACK_MS;
+    if (this.now().getTime() < resetsAt) return;
+    await this.record({ type: "plan-limit-reset", actor: "orchestrator", caused_by: pause.id });
+  }
+
+  /** When the plan limit is reached, or past 90% of it, no new Stage run starts until it resets. */
+  private async planLimitHit(info: RateLimitInfo, caused_by: string | null | undefined): Promise<void> {
+    if (this.deps.log.factoryPause()?.type === "plan-limit-hit") return;
+    await this.record({
+      type: "plan-limit-hit",
+      actor: "orchestrator",
+      caused_by: caused_by ?? null,
+      data: { status: info.status, ...(info.resets_at && { resets_at: info.resets_at }), ...(info.utilization !== undefined && { utilization: info.utilization }) },
+    });
   }
 
   private queue(running: Map<string, unknown>): JobState[] {
@@ -147,6 +241,19 @@ export class Orchestrator {
       return;
     }
     if (live) return; // One live Job per issue.
+    // Re-labelling a failed or cancelled Job starts its next Attempt; after a merge, a new Job.
+    const ended = this.deps.log.jobs().findLast((j) => j.repo === item.repo && j.issue === issue);
+    if (ended && (ended.status === "failed" || ended.status === "cancelled")) {
+      await this.record({
+        type: "job-retried",
+        job_id: ended.job_id,
+        attempt: ended.attempt,
+        actor: `human:${item.by}`,
+        data: { title: item.issue.title, body: item.issue.body, labels: item.labels },
+      });
+      return;
+    }
+    const branch = attemptBranch(item.issue.number, this.attemptsOfIssue(item.repo, item.issue.number) + 1);
     const job_id = ulid();
     const approval = await this.record({
       type: "job-approved",
@@ -154,7 +261,6 @@ export class Orchestrator {
       actor: `human:${item.by}`,
       data: { repo: item.repo, issue: item.issue.number, title: item.issue.title, body: item.issue.body, labels: item.labels },
     });
-    const branch = attemptBranch(item.issue.number, 1);
     const wc = await this.deps.clones.startAttempt({ repo: item.repo, job_id, attempt: 1, branch });
     await this.record({ type: "attempt-started", job_id, attempt: 1, actor: "orchestrator", caused_by: approval.id, data: { branch, base: wc.base } });
   }
@@ -196,6 +302,8 @@ export class Orchestrator {
     if (this.deps.config.refresh().changed) {
       await this.record({ type: "config-reloaded", actor: "orchestrator", data: { config_hash: this.deps.config.hash } });
     }
+    const retried = pendingRetry(this.deps.log.eventsFor(job.job_id));
+    if (retried) return instant(() => this.nextAttempt(job, retried));
     const ctx = this.context(job);
     const base = { job_id: job.job_id, attempt: job.attempt, caused_by: ctx.cause };
     const acting = ctx.reply && this.actOnReply(ctx, ctx.reply.answered, ctx.reply.request);
@@ -217,6 +325,19 @@ export class Orchestrator {
     const hit = this.softBudgetHit(job, ctx.resolution);
     if (hit) return instant(() => this.budgetExceeded(job, hit, "before-stage-run", ctx.cause));
     return { kind: "stage-run", repoLimit: ctx.resolution.maxRunning, run: () => this.runStage(ctx, stage) };
+  }
+
+  /** Every Attempt any Job of this issue has had: each gets its own branch, even across Jobs. */
+  private attemptsOfIssue(repo: string, issue: number): number {
+    return this.deps.log.jobs().filter((j) => j.repo === repo && j.issue === issue).reduce((n, j) => n + j.attempt, 0);
+  }
+
+  /** The Attempt a human asked for: a fresh Working copy on its own branch from the default branch. */
+  private async nextAttempt(job: JobState, retried: FactoryEvent): Promise<void> {
+    const attempt = job.attempt + 1;
+    const branch = attemptBranch(job.issue, this.attemptsOfIssue(job.repo, job.issue) + 1);
+    const wc = await this.deps.clones.startAttempt({ repo: job.repo, job_id: job.job_id, attempt, branch });
+    await this.record({ type: "attempt-started", job_id: job.job_id, attempt, actor: "orchestrator", caused_by: retried.id, data: { branch, base: wc.base } });
   }
 
   private softBudgetHit(job: JobState, resolution: Resolution): BudgetHit | null {
@@ -244,7 +365,7 @@ export class Orchestrator {
     });
     const progress = attemptProgress(attemptEvents, resolution.stages.map((s) => s.id));
     const cause = events.findLast((e) => !NOT_CAUSES.has(e.type))?.id ?? null;
-    return { job, approval, resolution, progress, wc, cause, reply: pendingReply(events) };
+    return { job, approval, resolution, progress, events: attemptEvents, wc, cause, reply: pendingReply(events) };
   }
 
   /**
@@ -277,22 +398,30 @@ export class Orchestrator {
 
   private async runStage(ctx: StepContext, stage: ResolvedStage): Promise<void> {
     const stage_run_id = ulid();
-    const resume = this.resumable(ctx, stage);
+    // Resuming with an answer is the same Stage carrying on: it is not a retry (ADR 0010).
+    const answer = this.resumable(ctx, stage);
+    const retry = answer || stage.kind !== "agent" ? null : retryRun(ctx.events, stage.id);
+    const resume = answer
+      ? { session_id: answer.session_id, input: renderHumanInput(answer.answer) }
+      : retry?.kind === "resume"
+        ? { session_id: retry.session_id, input: retry.input }
+        : null;
+    const marks = { ...(answer && { answer: answer.answered }), ...(retry && { retry_of: retry.retry_of }) };
     const started = await this.record({
       job_id: ctx.job.job_id,
       attempt: ctx.job.attempt,
       stage_run_id,
       actor: "orchestrator",
       caused_by: ctx.cause,
-      // Resuming with an answer is the same Stage carrying on: it is not retried (ADR 0010).
       ...(resume
-        ? { type: "stage-resumed", data: { stage: stage.id, session_id: resume.session_id, answer: resume.answered, config_hash: this.deps.config.hash } }
-        : { type: "stage-started", data: { stage: stage.id, config_hash: this.deps.config.hash } }),
+        ? { type: "stage-resumed", data: { stage: stage.id, session_id: resume.session_id, ...marks, config_hash: this.deps.config.hash } }
+        : { type: "stage-started", data: { stage: stage.id, ...marks, config_hash: this.deps.config.hash } }),
     });
     const run = { job_id: ctx.job.job_id, attempt: ctx.job.attempt, stage_run_id, actor: `stage:${stage.id}` as const, caused_by: started.id };
     const outcome = stage.kind === "check" ? await this.runCheck(ctx, stage, run) : await this.runAgent(ctx, stage, stage_run_id, run, resume);
     if (outcome.kind === "fault") await this.fault(stage, outcome, run);
-    else if (outcome.kind !== "stopped") await this.conclude(ctx, stage, outcome, run);
+    else if (outcome.kind === "interrupted") await this.interrupted(ctx, stage, outcome, run);
+    else if (outcome.kind !== "stopped" && outcome.kind !== "abandoned") await this.conclude(ctx, stage, outcome, run);
   }
 
   /**
@@ -306,7 +435,7 @@ export class Orchestrator {
     return { ...pending, session_id: pending.session_id };
   }
 
-  private async runAgent(ctx: StepContext, stage: ResolvedStage, stage_run_id: string, run: RunEnvelope, resume: Resumable | null): Promise<StageOutcome> {
+  private async runAgent(ctx: StepContext, stage: ResolvedStage, stage_run_id: string, run: RunEnvelope, resume: { session_id: string; input: string } | null): Promise<StageOutcome> {
     const { job, wc, progress } = ctx;
     const brief: StageBrief = {
       stage: stage.id,
@@ -331,17 +460,33 @@ export class Orchestrator {
       budget: ctx.resolution.policies.budgets.stage_run,
       resultSchema: STAGE_RESULT_SCHEMA,
     };
-    let outcome = await this.deps.agent.run(resume ? { ...request, resume: { session_id: resume.session_id, input: renderHumanInput(resume.answer) } } : request);
+    let watched = await this.withTransientRetries(run, resume ? { ...request, resume } : request);
     let resumeFailed: string | undefined;
-    if (outcome.kind === "resume-failed") {
+    if (watched.outcome.kind === "resume-failed" && !watched.cutoff) {
       // The session can't be resumed: start a fresh one, which has the Q&A in its brief.
-      resumeFailed = outcome.message;
-      outcome = await this.deps.agent.run(request);
+      resumeFailed = watched.outcome.message;
+      watched = await this.withTransientRetries(run, request);
+    }
+    const { outcome, cutoff, rateLimited } = watched;
+    const session_id = "session_id" in outcome ? outcome.session_id : undefined;
+    const facts = "facts" in outcome ? outcome.facts : {};
+    if (cutoff === "stopping") return { kind: "abandoned" };
+    if (cutoff === "guard-denials") {
+      return { kind: "interrupted", reason: "guard-denials", message: `${MAX_GUARD_DENIALS} Guard denials in one Stage run.`, ...(session_id && { session_id }) };
+    }
+    if (cutoff === "idle" || cutoff === "wall-clock") {
+      const limits = this.sessionLimits(request.budget);
+      const message = cutoff === "idle" ? `no message from the session for ${duration(limits.idleMs)}` : `the session ran past its ${duration(limits.wallClockMs)} wall-clock Budget`;
+      return { kind: "error", reason: "timeout", message, facts, ...(session_id && { session_id }) };
+    }
+    if (outcome.kind === "fault") return outcome;
+    if (rateLimited && outcome.kind !== "output") {
+      return { kind: "interrupted", reason: "plan-limit", message: "The plan's rate limit was reached.", ...(session_id && { session_id }) };
     }
     if (outcome.kind === "resume-failed") return { kind: "error", reason: "sdk-error", message: `a fresh session reported a failed resume: ${outcome.message}`, facts: {} };
-    if (outcome.kind === "error") return outcome;
+    if (outcome.kind === "error") return { kind: "error", reason: outcome.reason, message: outcome.message, facts: outcome.facts, ...(outcome.where && { where: outcome.where }), ...(session_id && { session_id }) };
     const parsed = parseStageResult(outcome.output);
-    if (!parsed.ok) return { kind: "error", reason: "invalid-result", message: parsed.errors.join("; "), facts: outcome.facts };
+    if (!parsed.ok) return { kind: "error", reason: "invalid-result", message: parsed.errors.join("; "), facts: outcome.facts, ...(outcome.session_id && { session_id: outcome.session_id }) };
 
     const pushed = await this.pushAgentWork(ctx, stage, run);
     if (!pushed) return { kind: "stopped" };
@@ -352,6 +497,99 @@ export class Orchestrator {
       ...(resumeFailed && { extra: { resume_failed: resumeFailed } }),
       ...(outcome.session_id && { session_id: outcome.session_id }),
     };
+  }
+
+  /** Transient errors are retried with backoff, about five minutes in all, without counting (ADR 0010). */
+  private async withTransientRetries(run: RunEnvelope, request: Omit<AgentRunRequest, "events" | "signal">): Promise<Watched> {
+    for (let i = 0; ; i++) {
+      const watched = await this.session(run, request);
+      const { outcome } = watched;
+      const transient = outcome.kind === "error" && outcome.transient && !watched.cutoff && !watched.rateLimited;
+      if (!transient || i >= TRANSIENT_BACKOFF_MS.length || this.stopping.signal.aborted) return watched;
+      await (this.deps.sleep ?? sleep)(TRANSIENT_BACKOFF_MS[i]!);
+    }
+  }
+
+  private sessionLimits(budget: { minutes: number }) {
+    return { idleMs: this.deps.limits?.idleMs ?? IDLE_MS, wallClockMs: this.deps.limits?.wallClockMs ?? budget.minutes * 60_000 };
+  }
+
+  /**
+   * One agent session, watched by the Orchestrator's own timers (the SDK has none, ADR 0001):
+   * cut off at the wall-clock Budget, after too long with no message, at the third Guard
+   * denial, or when the Orchestrator stops. What the session reports is recorded in order.
+   */
+  private async session(run: RunEnvelope, request: Omit<AgentRunRequest, "events" | "signal">): Promise<Watched> {
+    const limits = this.sessionLimits(request.budget);
+    const controller = new AbortController();
+    let cutoff: Cutoff | null = null;
+    const cut = (why: Cutoff) => {
+      if (cutoff) return;
+      cutoff = why;
+      controller.abort(why);
+    };
+    let idle = setTimeout(() => cut("idle"), limits.idleMs);
+    const wall = setTimeout(() => cut("wall-clock"), limits.wallClockMs);
+    const onStop = () => cut("stopping");
+    this.stopping.signal.addEventListener("abort", onStop);
+    if (this.stopping.signal.aborted) onStop();
+
+    // Reports arrive synchronously; record them one after another, in the order they came.
+    let writes = Promise.resolve();
+    let writeError: unknown = null;
+    const later = (write: () => Promise<unknown>) => {
+      writes = writes.then(write).then(
+        () => undefined,
+        (err: unknown) => {
+          writeError ??= err;
+          cut("stopping");
+        },
+      );
+    };
+    let denials = 0;
+    let rateLimited = false;
+    const stage = String(request.brief.stage);
+    const events: AgentRunEvents = {
+      activity: () => {
+        clearTimeout(idle);
+        idle = setTimeout(() => cut("idle"), limits.idleMs);
+      },
+      session: (session_id) => later(() => this.record({ ...run, actor: "orchestrator", type: "session-started", data: { stage, session_id } })),
+      guardBlocked: (denial) => {
+        later(() => this.record({ ...run, actor: "orchestrator", type: "guard-blocked", data: { guard: denial.guard, tool: denial.tool, why: denial.why } }));
+        if (++denials >= MAX_GUARD_DENIALS) cut("guard-denials");
+      },
+      rateLimit: (info) => {
+        if (info.status === "rejected") rateLimited = true;
+        if (info.status === "rejected" || (info.status === "allowed_warning" && (info.utilization ?? 0) >= PLAN_LIMIT_WARNING)) {
+          later(() => this.planLimitHit(info, run.caused_by));
+        }
+      },
+    };
+    try {
+      const outcome: AgentRunOutcome = await this.deps.agent.run({ ...request, events, signal: controller.signal });
+      return { outcome, cutoff, rateLimited };
+    } finally {
+      clearTimeout(idle);
+      clearTimeout(wall);
+      this.stopping.signal.removeEventListener("abort", onStop);
+      await writes;
+      // eslint-disable-next-line no-unsafe-finally
+      if (writeError) throw writeError;
+    }
+  }
+
+  /** A run cut off for something outside the Stage: not a Run error, so not counted. */
+  private async interrupted(ctx: StepContext, stage: ResolvedStage, outcome: Extract<StageOutcome, { kind: "interrupted" }>, run: RunEnvelope): Promise<void> {
+    const ended = await this.record({
+      ...run,
+      actor: "orchestrator",
+      type: "stage-interrupted",
+      data: { stage: stage.id, reason: outcome.reason, ...(outcome.session_id && { session_id: outcome.session_id }) },
+    });
+    if (outcome.reason === "guard-denials") {
+      await this.askHuman(ctx, { kind: "approval", cause: "guard-denials", text: `${stage.id} was stopped after ${MAX_GUARD_DENIALS} Guard denials in one Stage run; see the guard-blocked events.` }, ended.id);
+    }
   }
 
   /**
@@ -461,12 +699,20 @@ export class Orchestrator {
       const errored = await this.record({
         ...run,
         type: "stage-errored",
-        data: { stage: stage.id, reason: outcome.reason, message: outcome.message, ...outcome.facts },
+        data: {
+          stage: stage.id,
+          reason: outcome.reason,
+          message: outcome.message,
+          ...outcome.facts,
+          ...(outcome.where && { where: outcome.where }),
+          ...(outcome.session_id && { session_id: outcome.session_id }),
+        },
       });
-      // A hit Budget pauses the Job rather than asking about a Run error.
+      // A hit Budget pauses the Job rather than retrying or asking (ADR 0010).
       if (overBudget) return errored;
-      // Retrying Run errors comes in #27; until then a human decides.
-      return this.askHuman(ctx, { kind: "approval", cause: "run-error", text: `${stage.id} ${outcome.reason}: ${outcome.message}` }, errored.id);
+      // Otherwise the Job is queued again and the Stage retries, unless a human must decide.
+      const ask = afterRunError([...ctx.events, errored], stage.id);
+      return ask ? this.askHuman(ctx, { kind: "approval", ...ask }, errored.id) : errored;
     }
 
     const { result } = outcome;
@@ -515,7 +761,12 @@ export class Orchestrator {
 
   /** Records one event and hands it to every Mirror. */
   private async record(event: NewEvent): Promise<FactoryEvent> {
-    const recorded = this.deps.log.record(event);
+    let recorded: FactoryEvent;
+    try {
+      recorded = this.deps.log.record(event);
+    } catch (err) {
+      throw new JobStoreUnwritable(err);
+    }
     await this.mirror(recorded);
     return recorded;
   }
@@ -536,6 +787,26 @@ export class Orchestrator {
 }
 
 type RunEnvelope = Pick<NewEvent, "job_id" | "attempt" | "stage_run_id" | "actor" | "caused_by">;
+
+/** A session's outcome, and whether the Orchestrator cut it off or the plan limit did. */
+interface Watched {
+  outcome: AgentRunOutcome;
+  cutoff: Cutoff | null;
+  rateLimited: boolean;
+}
+
+const IDLE_MS = 10 * 60_000;
+/** Three tries over about five minutes (ADR 0010). */
+const TRANSIENT_BACKOFF_MS = [30_000, 90_000, 180_000];
+/** The third Guard denial in one Stage run ends it with a Human request (ADR 0007). */
+const MAX_GUARD_DENIALS = 3;
+/** Past this share of the plan's rate limit, no new Stage run starts. */
+const PLAN_LIMIT_WARNING = 0.9;
+/** When a plan limit gives no reset time, look again after an hour. */
+const PLAN_LIMIT_FALLBACK_MS = 60 * 60_000;
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+const duration = (ms: number) => (ms >= 60_000 ? `${Math.round(ms / 60_000)} minutes` : `${ms}ms`);
 
 /** The envelope of an event the Orchestrator records about a Job's current Attempt. */
 const jobEvent = (job: JobState, caused_by: string | null) => ({ job_id: job.job_id, attempt: job.attempt, actor: "orchestrator" as const, caused_by });
@@ -575,13 +846,21 @@ const MAX_VIOLATIONS_IN_EVENT = 20;
 
 const instant = (run: () => Promise<unknown>): Plan => ({ kind: "instant", run: async () => void (await run()) });
 
-/** One branch per Attempt: `factory/<issue>`, then `factory/<issue>-a2`, … (ADR 0002). */
+/** One branch per Attempt of an issue: `factory/<issue>`, then `factory/<issue>-a2`, … (ADR 0002). */
 const attemptBranch = (issue: number, attempt: number) => (attempt > 1 ? `factory/${issue}-a${attempt}` : `factory/${issue}`);
 
 const isLive = (j: JobState) => !["merged", "failed", "cancelled"].includes(j.status);
 
+/** A `job-retried` no Attempt has started for yet. */
+function pendingRetry(events: FactoryEvent[]): FactoryEvent | null {
+  const retried = events.findLastIndex((e) => e.type === "job-retried");
+  if (retried === -1 || events.slice(retried + 1).some((e) => e.type === "attempt-started")) return null;
+  return events[retried]!;
+}
+
+/** The issue as last approved: at Job approval, or re-approved by re-labelling for a new Attempt. */
 function approvalOf(events: FactoryEvent[]): Approval {
-  const data = events.find((e) => e.type === "job-approved")?.data ?? {};
+  const data = events.findLast((e) => e.type === "job-approved" || (e.type === "job-retried" && typeof e.data.body === "string"))?.data ?? {};
   return {
     title: String(data.title ?? ""),
     body: String(data.body ?? ""),

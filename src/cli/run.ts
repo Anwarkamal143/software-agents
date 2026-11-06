@@ -5,7 +5,8 @@ import { parseReplyCommand } from "../humans/commands.js";
 import { recordReply, type IgnoredWhy } from "../humans/replies.js";
 import { EventLog } from "../jobs/event-log.js";
 import { homePaths } from "../home.js";
-import { computeJobs, type JobState } from "../jobs/projection.js";
+import { JobProjection, type JobState } from "../jobs/projection.js";
+import type { FactoryEvent } from "../events/envelope.js";
 import type { JobStore } from "../store/job-store.js";
 import { openSqliteJobStore } from "../store/sqlite-job-store.js";
 
@@ -26,6 +27,7 @@ Commands:
   approve <job>             Approve what a waiting Job asked for
   reject <job> <reason>     Reject it: the Job Bounces to build with the reason as a finding
   cancel <job>              Cancel a waiting Job
+  retry <job>               Start a failed or cancelled Job's next Attempt
 `;
 
 /** The `factory` CLI, in-process. Returns the exit code. */
@@ -42,6 +44,8 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
       case "reject":
       case "cancel":
         return reply(command, rest, io);
+      case "retry":
+        return retry(rest, io);
       case "config":
         if (rest[0] === "check") return configCheck(rest.slice(1), io);
         break;
@@ -67,8 +71,12 @@ function openStore(home: string): JobStore | null {
 
 function status(io: CliIo): number {
   const store = openStore(io.home);
-  const jobs: JobState[] = store ? [...computeJobs(store.read()).values()] : [];
+  const projection = new JobProjection();
+  for (const event of store?.read() ?? []) projection.apply(event);
   store?.close();
+  const jobs: JobState[] = projection.all();
+  const pause = projection.pause();
+  if (pause) io.stdout.write(`${describePause(pause)}\n`);
   if (!jobs.length) {
     io.stdout.write("No Jobs yet.\n");
     return 0;
@@ -78,7 +86,20 @@ function status(io: CliIo): number {
     ...jobs.map((j) => [j.job_id, `${j.repo}#${j.issue}`, j.status, j.stage ?? "-", j.reason ?? "-", `$${j.cost_usd.toFixed(2)}`]),
   ];
   io.stdout.write(table(rows));
+  // Waiting, paused and queued Jobs are never stuck; a long queue only warns (ADR 0010).
+  const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
+  for (const j of jobs) if (j.status === "queued" && Date.parse(j.updated_at) < dayAgo) io.stdout.write(`warning: Job ${j.job_id} has been queued for over a day.\n`);
   return 0;
+}
+
+function describePause(pause: FactoryEvent): string {
+  if (pause.type === "plan-limit-hit") {
+    const until = typeof pause.data.resets_at === "string" ? ` until ${pause.data.resets_at}` : "";
+    return `The Factory is paused (plan-limit)${until}.`;
+  }
+  const reason = typeof pause.data.reason === "string" ? ` (${pause.data.reason})` : "";
+  const message = typeof pause.data.message === "string" ? `: ${pause.data.message}` : ".";
+  return `The Factory is paused${reason}${message}`;
 }
 
 function events(args: string[], io: CliIo): number {
@@ -121,6 +142,31 @@ function reply(command: string, args: string[], io: CliIo): number {
     }
     io.stderr.write(`${IGNORED_MESSAGE[outcome.why](job_id)}\n`);
     return 1;
+  } finally {
+    store.close();
+  }
+}
+
+/** Only a human starts a new Attempt (ADR 0010): recorded here, started by the Orchestrator at its next step. */
+function retry(args: string[], io: CliIo): number {
+  const [job_id] = args;
+  if (!job_id) {
+    io.stderr.write("Usage: factory retry <job>\n");
+    return 2;
+  }
+  const store = openStore(io.home);
+  if (!store) throw new Error("The Factory has no Jobs yet.");
+  try {
+    const log = new EventLog(store);
+    const job = log.job(job_id);
+    if (!job) throw new Error(`No Job ${job_id}.`);
+    if (job.status !== "failed" && job.status !== "cancelled") {
+      io.stderr.write(`Job ${job_id} is ${job.status}: only a failed or cancelled Job can be retried.\n`);
+      return 1;
+    }
+    log.record({ type: "job-retried", job_id, attempt: job.attempt, actor: "cli" });
+    io.stdout.write(`Recorded a retry for Job ${job_id}. The Factory starts Attempt ${job.attempt + 1} at its next step.\n`);
+    return 0;
   } finally {
     store.close();
   }

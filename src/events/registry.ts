@@ -41,24 +41,34 @@ export const V1_EVENTS: EventRegistry = {
     data: obj({ repo: str, issue: { type: "integer", minimum: 1 } }, { title: { type: "string" }, body: { type: "string" }, labels: { type: "array", items: str } }),
   },
   "job-reapproval-needed": { version: 1, data: obj({}, { editor: str }) },
+  // A human asked for a failed or cancelled Job's next Attempt (ADR 0010): by re-labelling the
+  // issue, which carries its text as re-approved, or with `factory retry`.
+  "job-retried": { version: 1, data: obj({}, { title: { type: "string" }, body: { type: "string" }, labels: { type: "array", items: str } }) },
   "job-cancelled": { version: 1, data: obj({}, { reason: str }) },
   "attempt-started": { version: 1, data: obj({ branch: str }, { base: str }) },
   "job-failed": { version: 1, data: obj({ reason: str }) },
   // Stage run
-  "stage-started": { version: 1, data: obj(stage, { config_hash: str }) },
+  // `retry_of` is the stage-errored or stage-interrupted event this run retries (ADR 0010).
+  "stage-started": { version: 2, data: obj(stage, { config_hash: str, retry_of: str }), upgrades: { 1: sameData } },
   "stage-passed": { version: 1, data: obj(stage, usage) },
   "stage-failed": { version: 1, data: obj(stage, { ...usage, summary: str }) },
   // `session_id` is the agent session to resume once a human answers.
   "stage-needs-human": { version: 2, data: obj(stage, { ...usage, question: str, options: { type: "array", items: str }, session_id: str }), upgrades: { 1: sameData } },
   "stage-skipped": { version: 1, data: obj({ ...stage, why: str }) },
+  // The agent session a Stage run started, as soon as it is known, so a restart can resume it.
+  "session-started": { version: 1, data: obj({ ...stage, session_id: str }) },
+  // `session_id` is the broken agent session, which a retry may resume.
   "stage-errored": {
-    version: 1,
-    data: obj({ ...stage, reason: { enum: ["crash", "sdk-error", "invalid-result", "timeout", "budget"] } }, usage),
+    version: 2,
+    data: obj({ ...stage, reason: { enum: ["crash", "sdk-error", "invalid-result", "timeout", "budget"] } }, { ...usage, message: { type: "string" }, where: str, session_id: str }),
+    upgrades: { 1: sameData },
   },
   // `reason` says what interrupted the run, such as a Factory fault; absent after a restart.
-  "stage-interrupted": { version: 2, data: obj(stage, { reason: str }), upgrades: { 1: sameData } },
-  // The agent session `session_id` resumed with a human's answer (`answer`, the human-answered event).
-  "stage-resumed": { version: 2, data: obj(stage, { session_id: str, answer: str, config_hash: str }), upgrades: { 1: sameData } },
+  // `session_id` is the agent session cut off, which a restart resumes once.
+  "stage-interrupted": { version: 3, data: obj(stage, { reason: str, session_id: str }), upgrades: { 1: sameData, 2: sameData } },
+  // The agent session `session_id` resumed with a human's answer (`answer`, the human-answered event),
+  // or as a retry (`retry_of`).
+  "stage-resumed": { version: 3, data: obj(stage, { session_id: str, answer: str, retry_of: str, config_hash: str }), upgrades: { 1: sameData, 2: sameData } },
   // A Bounce a human asked for carries `answer` (the human-answered event); a `/reject` also carries its reason as `finding`.
   bounced: {
     version: 2,
@@ -68,7 +78,7 @@ export const V1_EVENTS: EventRegistry = {
   // Evidence and Guards
   // The Orchestrator's own proof about `head`, such as a passing Check Stage's output. Only a pass is Evidence.
   "evidence-recorded": { version: 2, data: obj({ head: str, sha256: str, size: int }, { stage: str }), upgrades: { 1: sameData } },
-  "guard-blocked": { version: 1, data: obj({ guard: str }, { tool: str }) },
+  "guard-blocked": { version: 2, data: obj({ guard: str }, { tool: str, why: str }), upgrades: { 1: sameData } },
   "prepush-failed": {
     version: 1,
     data: obj({ check: str }, { failures: { type: "array", items: obj({ check: str, message: str }) } }),
@@ -84,7 +94,8 @@ export const V1_EVENTS: EventRegistry = {
     data: obj({ budget: { enum: ["stage_run", "job", "daily"] } }, { checkpoint: { enum: CHECKPOINTS }, spent_usd: num, limit_usd: num, why: str }),
     upgrades: { 1: sameData },
   },
-  "plan-limit-hit": { version: 1, data: obj({}, { resets_at: str }) },
+  // `status` is the rate limit's: rejected, or allowed_warning past 90% (`utilization`).
+  "plan-limit-hit": { version: 2, data: obj({}, { resets_at: str, status: str, utilization: num }), upgrades: { 1: sameData } },
   "plan-limit-reset": { version: 1, data: obj() },
   // Humans
   "human-requested": {
@@ -124,7 +135,12 @@ export const V1_EVENTS: EventRegistry = {
   "factory-paused": { version: 2, data: obj({}, { reason: str, message: str }), upgrades: { 1: sameData } },
   "factory-resumed": { version: 1, data: obj() },
   "config-reloaded": { version: 1, data: obj({ config_hash: str }) },
-  "housekeeping-ran": { version: 1, data: obj() },
+  // What one sweep deleted (ADR 0010): counts, and the branches it deleted, so none is tried twice.
+  "housekeeping-ran": {
+    version: 2,
+    data: obj({}, { working_copies: int, transcripts: int, artifacts: int, branches_deleted: { type: "array", items: obj({ job_id: str, branch: str }) } }),
+    upgrades: { 1: sameData },
+  },
   // Bookkeeping
   "transition-rejected": {
     version: 1,

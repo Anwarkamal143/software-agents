@@ -191,6 +191,22 @@ export class Clones {
     rmSync(dir, { recursive: true, force: true });
   }
 
+  /**
+   * Deletes Job branches on the remote, from the Trusted clone. Returns those gone now:
+   * deleted, or never there. Throws if the remote can't be reached, so a sweep tries again.
+   */
+  async deleteBranches(repo: string, branches: string[]): Promise<string[]> {
+    const trusted = await this.trustedClone(repo);
+    return this.exclusive(trusted.dir, async () => {
+      const listing = await this.git.run(["ls-remote", "--heads", "origin", ...branches.map((b) => `refs/heads/${b}`)], { cwd: trusted.dir });
+      const present = new Set(listing.split("\n").filter(Boolean).map((l) => l.split("\t")[1]!.replace("refs/heads/", "")));
+      const existing = branches.filter((b) => present.has(b));
+      if (existing.length) await this.git.run(["push", "--quiet", "--no-verify", "origin", ...existing.map((b) => `:refs/heads/${b}`)], { cwd: trusted.dir });
+      for (const b of branches) await this.git.test(["update-ref", "-d", `refs/heads/${b}`], { cwd: trusted.dir });
+      return branches;
+    });
+  }
+
   /** Deletes every Working copy of a Job: on merged or cancelled (ADR 0008). */
   async removeJob(job_id: string): Promise<void> {
     rmSync(join(this.home, "work", job_id), { recursive: true, force: true });

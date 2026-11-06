@@ -30,7 +30,37 @@ export interface AgentRunRequest {
    * answer, marked as human input) as its next turn. The brief still describes the Stage.
    */
   resume?: { session_id: string; input: string };
+  /** What the session reports while it runs, as it happens. */
+  events: AgentRunEvents;
+  /** The Orchestrator's own timers and stops: the session ends soon after this aborts. */
   signal?: AbortSignal;
+}
+
+/** Things a running session reports to the Orchestrator, which decides what they mean. */
+export interface AgentRunEvents {
+  /** The session sent a message: it isn't stuck. */
+  activity(): void;
+  /** The session's id, once known, so a restart can resume it. */
+  session(session_id: string): void;
+  /** A Guard denied one tool call (ADR 0007). */
+  guardBlocked(denial: GuardDenial): void;
+  /** The plan's rate limit changed. */
+  rateLimit(info: RateLimitInfo): void;
+}
+
+export interface GuardDenial {
+  /** Which Guard: `secret-file`, `outside-working-copy` or `destructive-command`. */
+  guard: string;
+  tool: string;
+  why: string;
+}
+
+export interface RateLimitInfo {
+  status: "allowed" | "allowed_warning" | "rejected";
+  /** 0 to 1, how much of the limit is used. */
+  utilization?: number;
+  /** ISO-8601: when the limit resets. */
+  resets_at?: string;
 }
 
 export type RunErrorReason = "crash" | "sdk-error" | "timeout" | "budget";
@@ -39,7 +69,19 @@ export type AgentRunOutcome =
   /** The session ended with structured output. It isn't a Verdict until it passes the Stage result schema. */
   | { kind: "output"; output: unknown; facts: MeasuredFacts; session_id?: string }
   /** The session broke rather than judged: a Run error (ADR 0010). */
-  | { kind: "error"; reason: RunErrorReason; message: string; facts: MeasuredFacts; session_id?: string }
+  | {
+      kind: "error";
+      reason: RunErrorReason;
+      message: string;
+      facts: MeasuredFacts;
+      session_id?: string;
+      /** An API overload, 5xx or network blip: retried with backoff without counting (ADR 0010). */
+      transient?: boolean;
+      /** What failed, when the message alone doesn't say it the same way twice. Same reason in the same place skips retries. */
+      where?: string;
+    }
+  /** A Factory fault (ADR 0010): nothing about this Stage is wrong, but no session can run here. */
+  | { kind: "fault"; reason: "sandbox-unavailable" | "sign-in-mismatch"; message: string }
   /** The session asked to be resumed couldn't be: nothing ran, so the Orchestrator starts a fresh one. */
   | { kind: "resume-failed"; message: string };
 

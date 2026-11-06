@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import type { AgentRunOutcome } from "../src/agents/adapter.js";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { approved } from "./fakes/source.js";
@@ -159,8 +160,9 @@ describe("Orchestrator: one Job end to end", () => {
   });
 
   test("a Stage result that doesn't match the schema is not accepted as a Verdict", async () => {
+    const notAResult: AgentRunOutcome = { kind: "output", output: { verdict: "pass", summary: "LGTM", confidence: 0.99 }, facts: { cost_usd: 0.2, tokens: 10, turns: 1, duration_ms: 5, head: null, files_changed: [] } };
     const f = fakeFactory(
-      new ScriptedAgent({ triage: [{ kind: "output", output: { verdict: "pass", summary: "LGTM", confidence: 0.99 }, facts: { cost_usd: 0.2, tokens: 10, turns: 1, duration_ms: 5, head: null, files_changed: [] } }] }),
+      new ScriptedAgent({ triage: [notAResult, notAResult] }),
     );
     f.source.push(approved(7));
 
@@ -177,8 +179,9 @@ describe("Orchestrator: one Job end to end", () => {
         cost_usd: 0.2,
       },
     });
-    expect(f.agent.stagesRun()).toEqual(["triage"]);
-    expect(f.onlyJob()).toMatchObject({ status: "waiting", reason: "run-error", cost_usd: 0.2 });
+    // Retried with a correction turn; the same schema errors again go to a human.
+    expect(f.agent.stagesRun()).toEqual(["triage", "triage"]);
+    expect(f.onlyJob()).toMatchObject({ status: "waiting", reason: "repeated-run-error", cost_usd: 0.4 });
   });
 
   test("a needs-human Verdict sends the Job to waiting with the Stage's question", async () => {

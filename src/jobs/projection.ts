@@ -37,6 +37,8 @@ const LIVE: readonly JobStatus[] = ["queued", "running", "waiting", "paused"];
 /** Every event type that moves a Job's status, and where from. Anything else leaves status alone. */
 const MOVES: Record<string, Move> = {
   "attempt-started": { from: ["queued", "failed"], to: "queued" },
+  // Only a human starts a new Attempt (ADR 0010).
+  "job-retried": { from: ["failed", "cancelled"], to: "queued" },
   "stage-started": { from: ["queued"], to: "running" },
   "stage-resumed": { from: ["queued"], to: "running" },
   "stage-passed": { from: ["running"], to: "queued" },
@@ -75,6 +77,8 @@ export class JobProjection {
   private readonly states = new Map<string, JobState>();
   /** Reason of the Factory-wide pause in effect, if any. */
   private factoryPause: string | null = null;
+  /** The event that started it. */
+  private factoryPauseEvent: FactoryEvent | null = null;
 
   apply(event: FactoryEvent): void {
     if (event.job_id === null) return this.applyFactoryWide(event);
@@ -122,6 +126,11 @@ export class JobProjection {
     job.updated_at = event.at;
   }
 
+  /** The `plan-limit-hit` or `factory-paused` event in effect, or null when the Factory isn't paused. */
+  pause(): FactoryEvent | null {
+    return this.factoryPauseEvent;
+  }
+
   get(job_id: string): JobState | undefined {
     const job = this.states.get(job_id);
     return job && { ...job };
@@ -145,8 +154,13 @@ export class JobProjection {
   private applyFactoryWide(event: FactoryEvent): void {
     const pause = FACTORY_PAUSES[event.type];
     const release = Object.values(FACTORY_PAUSES).find((p) => p.releasedBy === event.type);
-    if (pause) this.factoryPause = pause.reason;
-    else if (release && this.factoryPause === release.reason) this.factoryPause = null;
+    if (pause) {
+      this.factoryPause = pause.reason;
+      this.factoryPauseEvent = event;
+    } else if (release && this.factoryPause === release.reason) {
+      this.factoryPause = null;
+      this.factoryPauseEvent = null;
+    }
     for (const job of this.states.values()) {
       if (pause && job.status === "queued") {
         job.status = "paused";
