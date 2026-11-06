@@ -39,6 +39,12 @@ export interface OwnerPolicyPatch extends PolicyPatch {
   risk_rules_off?: string[];
 }
 
+/** Run the Stage only if the Job has any of `labels`, or the Attempt changed a file matching any of `paths`. */
+export interface StageCondition {
+  labels?: string[];
+  paths?: string[];
+}
+
 export interface AgentStage {
   kind: "agent";
   instructions: string;
@@ -46,6 +52,7 @@ export interface AgentStage {
   model?: string;
   /** The earlier Stage a fail Verdict Bounces to. */
   on_fail?: string;
+  when?: StageCondition;
 }
 
 export interface CheckStage {
@@ -53,6 +60,7 @@ export interface CheckStage {
   /** Which of the Target repo's `commands` lists to run. */
   run: string;
   on_fail?: string;
+  when?: StageCondition;
 }
 
 export type Stage = AgentStage | CheckStage;

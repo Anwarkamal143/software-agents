@@ -30,7 +30,11 @@ const stage = { stage: str };
 /** The v1 event types (Event schema and observability, #16, plus ADR 0010). */
 export const V1_EVENTS: EventRegistry = {
   // Job
-  "job-approved": { version: 1, data: obj({ repo: str, issue: { type: "integer", minimum: 1 } }, { title: str }) },
+  "job-approved": {
+    version: 1,
+    // The approved issue text (untrusted) and labels, as the Source saw them at approval.
+    data: obj({ repo: str, issue: { type: "integer", minimum: 1 } }, { title: { type: "string" }, body: { type: "string" }, labels: { type: "array", items: str } }),
+  },
   "job-reapproval-needed": { version: 1, data: obj({}, { editor: str }) },
   "job-cancelled": { version: 1, data: obj({}, { reason: str }) },
   "attempt-started": { version: 1, data: obj({ branch: str }) },
@@ -39,7 +43,8 @@ export const V1_EVENTS: EventRegistry = {
   "stage-started": { version: 1, data: obj(stage, { config_hash: str }) },
   "stage-passed": { version: 1, data: obj(stage, usage) },
   "stage-failed": { version: 1, data: obj(stage, { ...usage, summary: str }) },
-  "stage-needs-human": { version: 1, data: obj(stage, { ...usage, question: str }) },
+  "stage-needs-human": { version: 1, data: obj(stage, { ...usage, question: str, options: { type: "array", items: str } }) },
+  "stage-skipped": { version: 1, data: obj({ ...stage, why: str }) },
   "stage-errored": {
     version: 1,
     data: obj({ ...stage, reason: { enum: ["crash", "sdk-error", "invalid-result", "timeout", "budget"] } }, usage),
@@ -57,7 +62,11 @@ export const V1_EVENTS: EventRegistry = {
   "plan-limit-hit": { version: 1, data: obj({}, { resets_at: str }) },
   "plan-limit-reset": { version: 1, data: obj() },
   // Humans
-  "human-requested": { version: 1, data: obj({ kind: { enum: ["question", "approval"] } }, { text: str }) },
+  "human-requested": {
+    version: 1,
+    // `cause` names why the Factory needs judgement, such as bounce-cap or repeated-root-cause.
+    data: obj({ kind: { enum: ["question", "approval"] } }, { text: str, options: { type: "array", items: str }, cause: str }),
+  },
   "human-answered": { version: 1, data: obj({ command: { enum: ["answer", "approve", "reject", "cancel"] } }, { option: str }) },
   "reply-ignored": { version: 1, data: obj({ why: str }) },
   "human-reminded": { version: 1, data: obj() },

@@ -1,5 +1,5 @@
 import { AT_LEAST_AS_STRICT, BUILT_IN_POLICIES, BUILT_IN_RISK_RULES, FACTORY_WIDE_POLICY_KEYS, flatten, unflatten } from "./policies.js";
-import type { FactoryConfig, OwnerPolicyPatch, Policies, RiskRule, ToolProfile } from "./types.js";
+import type { FactoryConfig, OwnerPolicyPatch, Policies, RiskRule, StageCondition, ToolProfile } from "./types.js";
 
 export interface JobInput {
   /** `owner/repo` */
@@ -17,6 +17,7 @@ export interface ResolvedStage {
   tools?: ToolProfile;
   /** Check Stages: the repo's commands, empty if it has none. */
   commands?: string[];
+  when?: StageCondition;
 }
 
 export interface Refusal {
@@ -126,7 +127,7 @@ export function resolve(config: FactoryConfig, job: JobInput): Resolution {
     if (stage.kind === "check") {
       const commands = repo.commands?.[stage.run] ?? [];
       if (!commands.length) errors.push(`Check Stage "${id}" needs "${stage.run}" commands, but ${repo.name} doesn't define them.`);
-      return { id, kind: "check", commands, ...(stage.on_fail && { on_fail: stage.on_fail }) };
+      return { id, kind: "check", commands, ...(stage.on_fail && { on_fail: stage.on_fail }), ...(stage.when && { when: stage.when }) };
     }
     const override = repo.stage_overrides?.[id];
     return {
@@ -136,6 +137,7 @@ export function resolve(config: FactoryConfig, job: JobInput): Resolution {
       model: override?.model ?? stage.model ?? repo.agent?.model ?? config.agent.model,
       instructions: override?.instructions ?? stage.instructions,
       ...(stage.on_fail && { on_fail: stage.on_fail }),
+      ...(stage.when && { when: stage.when }),
     };
   });
 
