@@ -17,6 +17,10 @@ export interface ResolvedStage {
   tools?: ToolProfile;
   /** Check Stages: the repo's commands, empty if it has none. */
   commands?: string[];
+  /** Check Stages: the hosts the commands may reach, from the repo's `network`. */
+  network?: string[];
+  /** Check Stages: keychain names of the secrets the commands get, from the repo's `check_secrets`. */
+  secrets?: string[];
   when?: StageCondition;
 }
 
@@ -127,7 +131,7 @@ export function resolve(config: FactoryConfig, job: JobInput): Resolution {
     if (stage.kind === "check") {
       const commands = repo.commands?.[stage.run] ?? [];
       if (!commands.length) errors.push(`Check Stage "${id}" needs "${stage.run}" commands, but ${repo.name} doesn't define them.`);
-      return { id, kind: "check", commands, ...(stage.on_fail && { on_fail: stage.on_fail }), ...(stage.when && { when: stage.when }) };
+      return { id, kind: "check", commands, network: repo.network ?? [], secrets: repo.check_secrets ?? [], ...(stage.on_fail && { on_fail: stage.on_fail }), ...(stage.when && { when: stage.when }) };
     }
     const override = repo.stage_overrides?.[id];
     return {

@@ -12,7 +12,8 @@ import type { PrePushChecks } from "../repos/prepush.js";
 import type { Clones, WorkingCopy } from "../repos/clones.js";
 import type { Source, SourceItem } from "../source/source.js";
 import { renderBrief, type StageBrief } from "../stages/brief.js";
-import type { CheckRunner } from "../stages/check-runner.js";
+import type { SecretStore } from "../secrets/keychain.js";
+import { SandboxUnavailable, type CheckRun, type CheckRunner } from "../stages/check-runner.js";
 import { parseStageResult, STAGE_RESULT_SCHEMA, type StageResult } from "../stages/result.js";
 import type { ArtifactStore } from "../store/artifact-store.js";
 import { attemptProgress, type AttemptProgress } from "./progress.js";
@@ -28,6 +29,8 @@ export interface OrchestratorDeps {
   /** Trusted clones and Working copies (ADR 0008). */
   clones: Clones;
   prePush: PrePushChecks;
+  /** Where check secrets are read from, by the Orchestrator alone. */
+  secrets: SecretStore;
 }
 
 /** The approved issue, as recorded on `job-approved`. */
@@ -41,7 +44,9 @@ type StageOutcome =
   | { kind: "result"; result: StageResult; facts: Partial<MeasuredFacts>; extra?: Record<string, unknown> }
   | { kind: "error"; reason: RunErrorReason | "invalid-result"; message: string; facts: Partial<MeasuredFacts> }
   /** A Pre-push check failed: already recorded, and the Job is waiting. */
-  | { kind: "stopped" };
+  | { kind: "stopped" }
+  /** A Factory fault (ADR 0010): the run ends without a Verdict and the whole Factory pauses. */
+  | { kind: "fault"; reason: "sandbox-unavailable" | "check-secret-missing"; message: string };
 
 /** Everything one step of one Job is decided from. */
 interface StepContext {
@@ -193,8 +198,9 @@ export class Orchestrator {
       data: { stage: stage.id, config_hash: this.deps.config.hash },
     });
     const run = { job_id: ctx.job.job_id, attempt: ctx.job.attempt, stage_run_id, actor: `stage:${stage.id}` as const, caused_by: started.id };
-    const outcome = stage.kind === "check" ? await this.runCheck(ctx, stage, stage_run_id) : await this.runAgent(ctx, stage, stage_run_id, run);
-    if (outcome.kind !== "stopped") await this.conclude(ctx, stage, outcome, run);
+    const outcome = stage.kind === "check" ? await this.runCheck(ctx, stage, run) : await this.runAgent(ctx, stage, stage_run_id, run);
+    if (outcome.kind === "fault") await this.fault(stage, outcome, run);
+    else if (outcome.kind !== "stopped") await this.conclude(ctx, stage, outcome, run);
   }
 
   private async runAgent(ctx: StepContext, stage: ResolvedStage, stage_run_id: string, run: RunEnvelope): Promise<StageOutcome> {
@@ -253,24 +259,48 @@ export class Orchestrator {
     return { head, files_changed };
   }
 
-  /** Runs a Check Stage in a fresh checkout of exactly the pushed head, so its result is about that commit. */
-  private async runCheck(ctx: StepContext, stage: ResolvedStage, stage_run_id: string): Promise<StageOutcome> {
-    const head = ctx.progress.pushedHead ?? ctx.wc.base;
+  /**
+   * Runs a Check Stage under the Sandbox in a fresh checkout of exactly the pushed head, so
+   * its result is about that commit, and records its output as Evidence for that head.
+   */
+  private async runCheck(ctx: StepContext, stage: ResolvedStage, run: RunEnvelope): Promise<StageOutcome> {
+    const { wc } = ctx;
+    const head = ctx.progress.pushedHead ?? wc.base;
     const startedAt = Date.now();
-    const dir = await this.deps.clones.checkStageCopy(ctx.wc, head, stage_run_id);
-    let run;
+    // Only this repo's check secrets, read by the Orchestrator itself; nothing else of its environment.
+    const secrets: Record<string, string> = {};
+    for (const name of stage.secrets!) {
+      const value = await this.deps.secrets.get(name);
+      if (value === null) return { kind: "fault", reason: "check-secret-missing", message: `Check secret ${name} isn't in the keychain (set it with \`factory secret set ${name}\`).` };
+      secrets[name] = value;
+    }
+    const dir = await this.deps.clones.checkStageCopy(wc, head, run.stage_run_id!);
+    let checked: CheckRun;
     try {
-      run = await this.deps.checks.run({ commands: stage.commands!, cwd: dir, env: ctx.wc.env });
+      checked = await this.deps.checks.run({
+        commands: stage.commands!,
+        cwd: dir,
+        env: { ...secrets, ...wc.env },
+        writable: [wc.env.HOME, wc.env.XDG_CACHE_HOME, wc.env.TMPDIR],
+        network: stage.network!,
+      });
+    } catch (err) {
+      // Never run unsandboxed: the check fails and the Factory pauses (ADR 0007, ADR 0010).
+      if (err instanceof SandboxUnavailable) return { kind: "fault", reason: "sandbox-unavailable", message: err.message };
+      throw err;
     } finally {
       this.deps.clones.removeCheckStageCopy(dir);
     }
-    const output = this.deps.artifacts.put(run.output);
+    const blocked = checked.violations.length ? `\nThe Sandbox blocked:\n${checked.violations.map((v) => `  ${v}\n`).join("")}` : "";
+    const output = this.deps.artifacts.put(checked.output + blocked);
+    await this.record({ ...run, actor: "orchestrator", type: "evidence-recorded", data: { stage: stage.id, passed: checked.passed, head, ...output } });
     const facts = { cost_usd: 0, duration_ms: Date.now() - startedAt, head };
-    if (run.passed) {
+    const extra = { output, violations: checked.violations.slice(0, MAX_VIOLATIONS_IN_EVENT) };
+    if (checked.passed) {
       const summary = `All ${stage.commands!.length} command(s) passed.`;
-      return { kind: "result", result: { verdict: "pass", summary, findings: [], artifacts: [] }, facts, extra: { output } };
+      return { kind: "result", result: { verdict: "pass", summary, findings: [], artifacts: [] }, facts, extra };
     }
-    const failed = run.failed!;
+    const failed = checked.failed!;
     const message = `\`${failed.command}\` ${failed.timed_out ? "timed out" : `exited ${failed.exit_code}`}.`;
     return {
       kind: "result",
@@ -282,12 +312,18 @@ export class Orchestrator {
         artifacts: [],
       },
       facts,
-      extra: { output },
+      extra,
     };
   }
 
+  /** A Factory fault: pause the whole Factory, then end the Stage run, so the Job parks until it resumes. */
+  private async fault(stage: ResolvedStage, fault: Extract<StageOutcome, { kind: "fault" }>, run: RunEnvelope): Promise<void> {
+    const paused = await this.record({ type: "factory-paused", actor: "orchestrator", caused_by: run.caused_by, data: { reason: fault.reason, message: fault.message } });
+    await this.record({ ...run, actor: "orchestrator", caused_by: paused.id, type: "stage-interrupted", data: { stage: stage.id, reason: fault.reason } });
+  }
+
   /** Records how the Stage run ended and where the Pipeline goes next. */
-  private async conclude(ctx: StepContext, stage: ResolvedStage, outcome: Exclude<StageOutcome, { kind: "stopped" }>, run: RunEnvelope): Promise<void> {
+  private async conclude(ctx: StepContext, stage: ResolvedStage, outcome: Extract<StageOutcome, { kind: "result" | "error" }>, run: RunEnvelope): Promise<void> {
     const { job, progress, resolution } = ctx;
     if (outcome.kind === "error") {
       const errored = await this.record({
@@ -354,6 +390,9 @@ export class Orchestrator {
 }
 
 type RunEnvelope = Pick<NewEvent, "job_id" | "attempt" | "stage_run_id" | "actor" | "caused_by">;
+
+/** Event data stays small; the output artifact holds every violation. */
+const MAX_VIOLATIONS_IN_EVENT = 20;
 
 const instant = (run: () => Promise<unknown>): Plan => ({ kind: "instant", run: async () => void (await run()) });
 

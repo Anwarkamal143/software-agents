@@ -24,7 +24,7 @@ describe("Orchestrator: one Job end to end", () => {
       "attempt-started",
       "stage-started", "stage-passed", // triage
       "stage-started", "branch-pushed", "stage-passed", // build
-      "stage-started", "stage-passed", // verify
+      "stage-started", "evidence-recorded", "stage-passed", // verify
       "stage-started", "stage-passed", // review
       "stage-started", "stage-passed", // security
       "checkpoint-evaluated",
@@ -220,6 +220,7 @@ describe("Orchestrator: one Job end to end", () => {
       ["branch-pushed", "stage-started"],
       ["stage-passed", "stage-started"],
       ["stage-started", "stage-passed"],
+      ["evidence-recorded", "stage-started"], // verify
       ["stage-passed", "stage-started"],
       ["stage-started", "stage-passed"],
       ["stage-failed", "stage-started"],
@@ -228,6 +229,7 @@ describe("Orchestrator: one Job end to end", () => {
       ["branch-pushed", "stage-started"],
       ["stage-passed", "stage-started"],
       ["stage-started", "stage-passed"],
+      ["evidence-recorded", "stage-started"], // verify
       ["stage-passed", "stage-started"],
       ["stage-started", "stage-passed"],
       ["stage-passed", "stage-started"],

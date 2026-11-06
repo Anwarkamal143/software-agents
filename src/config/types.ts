@@ -75,9 +75,9 @@ export interface TargetRepo {
   name: string;
   default_pipeline: string;
   commands?: Record<string, string[]>;
-  /** Domains a Tool profile may reach from this repo's Sandbox. */
+  /** Domains this repo's Check Stages, and Tool profiles that enable network, may reach from the Sandbox. */
   network?: string[];
-  /** Keychain names of check secrets, set with `factory secret set`. */
+  /** Keychain names of check secrets, set with `factory secret set`. Each Check Stage gets them as env vars of the same name. */
   check_secrets?: string[];
   max_running?: number;
   policies?: OwnerPolicyPatch & { budgets?: PolicyPatch["budgets"] };
