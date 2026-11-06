@@ -19,13 +19,20 @@ describe("matchRiskRules: the built-in Risk rules", () => {
     ["secrets", ".env"],
     ["secrets", "config/.env.production"],
     ["ci-config", ".github/workflows/ci.yml"],
+    ["ci-config", ".github/actions/setup/action.yml"],
+    ["auth", "src/oauth/callback.ts"],
+    ["secrets", "deploy/server.pem"],
   ])("%s matches %s", (rule, path) => {
     expect(check([file(path)]).map((m) => m.rule)).toEqual([rule]);
   });
 
   test("secrets matches a private key in an added line, whatever the file", () => {
     const matches = check([file("src/fixtures/key.txt", ["-----BEGIN PRIVATE KEY-----", "MIIE..."])]);
-    expect(matches).toEqual([{ rule: "secrets", why: 'an added line in src/fixtures/key.txt contains "BEGIN PRIVATE KEY"' }]);
+    expect(matches).toEqual([{ rule: "secrets", why: 'an added line in src/fixtures/key.txt contains "PRIVATE KEY-----"' }]);
+  });
+
+  test.each(["-----BEGIN RSA PRIVATE KEY-----", "-----BEGIN OPENSSH PRIVATE KEY-----", "-----BEGIN EC PRIVATE KEY-----"])("secrets matches %s", (line) => {
+    expect(check([file("src/fixtures/key.txt", [line])]).map((m) => m.rule)).toEqual(["secrets"]);
   });
 
   test("an ordinary change matches nothing", () => {

@@ -1,4 +1,5 @@
 import { Ajv, type ValidateFunction } from "ajv";
+import { CHECKPOINTS } from "../policies/checkpoint.js";
 
 /**
  * Every event type has a schema for its `data` at its current version, plus
@@ -66,12 +67,12 @@ export const V1_EVENTS: EventRegistry = {
   // The Orchestrator pushed the Job branch from the Trusted clone after Pre-push checks passed.
   "branch-pushed": { version: 1, data: obj({ branch: str, before: str, head: str }) },
   // Policies
-  // `checkpoint` is before-stage-run, after-stage-result, merge-gate or after-merge; `outcome` is what it decided.
-  "checkpoint-evaluated": { version: 2, data: obj({ checkpoint: str }, { outcome: str, why: str }), upgrades: { 1: sameData } },
+  // `outcome` is what the Checkpoint decided.
+  "checkpoint-evaluated": { version: 2, data: obj({ checkpoint: { enum: CHECKPOINTS } }, { outcome: str, why: str }), upgrades: { 1: sameData } },
   // Spend is always an estimate.
   "budget-exceeded": {
     version: 2,
-    data: obj({ budget: { enum: ["stage_run", "job", "daily"] } }, { checkpoint: str, spent_usd: num, limit_usd: num, why: str }),
+    data: obj({ budget: { enum: ["stage_run", "job", "daily"] } }, { checkpoint: { enum: CHECKPOINTS }, spent_usd: num, limit_usd: num, why: str }),
     upgrades: { 1: sameData },
   },
   "plan-limit-hit": { version: 1, data: obj({}, { resets_at: str }) },

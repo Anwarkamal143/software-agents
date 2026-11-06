@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { BUILT_IN_POLICIES } from "../src/config/policies.js";
-import { budgetBeforeStageRun, budgetAfterStageRun, spentSince } from "../src/policies/budgets.js";
+import { budgetBeforeStageRun, budgetAfterStageRun, spentSince, spentToday } from "../src/policies/budgets.js";
 
 const budgets = BUILT_IN_POLICIES.budgets; // $5 / 100 turns / 30 min per Stage run, $20 per Job, $50 per day
 
@@ -65,5 +65,16 @@ describe("spentSince", () => {
       { at: "2026-11-06T08:00:01.000Z", data: { branch: "x", before: "a", head: "b" } },
     ];
     expect(spentSince(events, "2026-11-06T00:00:00.000Z")).toBe(3.25);
+  });
+});
+
+describe("spentToday", () => {
+  test("counts from local midnight", () => {
+    const now = new Date(2026, 10, 6, 15, 0);
+    const events = [
+      { at: new Date(2026, 10, 5, 23, 59).toISOString(), data: { cost_usd: 9 } },
+      { at: new Date(2026, 10, 6, 0, 1).toISOString(), data: { cost_usd: 1.5 } },
+    ];
+    expect(spentToday(events, now)).toBe(1.5);
   });
 });

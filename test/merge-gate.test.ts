@@ -218,7 +218,7 @@ describe("mergeGateEvents", () => {
     expect(recordable(mergeGateEvents(H, gate, decision))).toEqual([
       { type: "merge-gate-evaluated", data: { passed: true, head: H, failures: [] } },
       { type: "would-have-merged", data: { would: true, why: "the Merge gate passed and no Risk rule matched" } },
-      { type: "checkpoint-evaluated", data: { checkpoint: "merge-gate", outcome: "ask", why: "Autonomy is trial: you merge" } },
+      { type: "checkpoint-evaluated", data: { checkpoint: "merge-gate", outcome: "ask", why: "Autonomy is trial: you merge, or `/approve` and the Factory merges" } },
     ]);
   });
 

@@ -1,12 +1,13 @@
 import picomatch from "picomatch";
 import type { Autonomy } from "../config/types.js";
+import type { NewEvent } from "../events/envelope.js";
 import type { ChangedFile, RiskMatch } from "./risk.js";
 
 /** How a Stage's latest Stage run in this Attempt ended, and the head it ended at. */
 export interface StageAtGate {
   stage: string;
   ending: "passed" | "skipped" | "failed" | "needs-human" | "errored" | "none";
-  /** The Job branch's head when the run ended, as the Orchestrator measured it. */
+  /** The Job branch's head when the Stage run ended, as the Orchestrator measured it. */
   head: string | null;
 }
 
@@ -46,12 +47,12 @@ export function evaluateMergeGate(facts: MergeGateFacts): MergeGateResult {
     if (s.ending !== "passed" && s.ending !== "skipped") fail("stages", `${s.stage} hasn't passed (latest: ${s.ending})`);
   }
   // Stages before the one that wrote the head judged earlier commits, as they should (triage
-  // judges the issue); every Stage from the first that saw the head on must have passed it.
-  const ran = facts.stages.filter((s) => s.ending === "passed");
-  const firstAtHead = ran.findIndex((s) => s.head === facts.head);
+  // judges the issue); every Stage from the first that saw the head on must have passed it (ADR 0004).
+  const passedStages = facts.stages.filter((s) => s.ending === "passed");
+  const firstAtHead = passedStages.findIndex((s) => s.head === facts.head);
   if (firstAtHead === -1) fail("stages", `no Stage passed at the head ${facts.head}`);
   else {
-    for (const s of ran.slice(firstAtHead)) {
+    for (const s of passedStages.slice(firstAtHead)) {
       if (s.head !== facts.head) fail("stages", `${s.stage} passed at ${s.head}, not the head ${facts.head}`);
     }
   }
@@ -60,15 +61,21 @@ export function evaluateMergeGate(facts: MergeGateFacts): MergeGateResult {
 
   if (!facts.pr) fail("no-pr", "there is no PR");
   else {
-    if (facts.pr.checks === "red") fail("checks-red", "the PR's checks are red");
-    if (facts.pr.checks === "pending") fail("checks-pending", "the PR's checks are still running");
-    if (facts.pr.checks === "none") fail("checks-none", "the PR has no checks");
+    const checks = CHECKS_FAILURE[facts.pr.checks];
+    if (checks) fail(...checks);
     if (facts.pr.conflicts) fail("conflicts", "the PR conflicts with its base");
   }
 
   if (facts.selfEdits.length) fail("self-edit", `the PR edits its own checks: ${facts.selfEdits.join("; ")}`);
   return { passed: !failures.length, failures };
 }
+
+const CHECKS_FAILURE: Record<NonNullable<PrState>["checks"], [GateFailureCode, string] | null> = {
+  green: null,
+  red: ["checks-red", "the PR's checks are red"],
+  pending: ["checks-pending", "the PR's checks are still running"],
+  none: ["checks-none", "the PR has no checks"],
+};
 
 export interface SelfEditInput {
   files: ChangedFile[];
@@ -81,6 +88,8 @@ export interface SelfEditInput {
 const CI_WORKFLOWS = picomatch([".github/workflows/**", ".github/actions/**"], { dot: true });
 const FACTORY_CONFIG = picomatch(["**/factory.yaml", "**/.factory/**"], { dot: true });
 const MAKEFILES = new Set(["Makefile", "makefile", "GNUmakefile"]);
+/** What `scriptsOf` gives for a `package.json` that won't parse. */
+const UNREADABLE = "\0unreadable";
 
 /**
  * Why a change edits its own checks: CI workflows, Factory config, `package.json`
@@ -109,8 +118,6 @@ function runs(command: string, path: string): boolean {
   if (words.includes(path)) return true;
   return MAKEFILES.has(path) && words.includes("make");
 }
-
-const UNREADABLE = "\0unreadable";
 
 /** A `package.json`'s scripts, in a form two versions can be compared by. */
 function scriptsOf(text: string | null): string {
@@ -149,27 +156,28 @@ export function decideMerge({ autonomy, gate, risks, approved }: MergeInput): Me
   const why = (fs: { why: string }[]) => fs.map((f) => f.why).join("; ");
   const selfEdit = gate.failures.filter((f) => f.code === "self-edit");
   const blocking = gate.failures.filter((f) => f.code !== "checks-pending");
-  const trial = (decision: Extract<MergeDecision, { action: "ask" }>, would: boolean, because: string): MergeDecision =>
-    autonomy === "trial" ? { ...decision, wouldHaveMerged: { would, why: because } } : decision;
+  /** An ask; in trial it also carries what the Factory would have done, by default for the same reason. */
+  const ask = (cause: AskCause, because: string, would = false, wouldBecause = because): MergeDecision =>
+    autonomy === "trial" ? { action: "ask", cause, why: because, wouldHaveMerged: { would, why: wouldBecause } } : { action: "ask", cause, why: because };
 
-  if (selfEdit.length) return trial({ action: "ask", cause: "self-edited-checks", why: why(selfEdit) }, false, why(selfEdit));
-  if (blocking.length) return trial({ action: "ask", cause: "merge-gate", why: why(blocking) }, false, why(blocking));
+  if (selfEdit.length) return ask("self-edited-checks", why(selfEdit));
+  if (blocking.length) return ask("merge-gate", why(blocking));
   if (!gate.passed) return { action: "wait", why: why(gate.failures) };
 
   if (approved) return { action: "merge", why: "a human approved it and the Merge gate passed" };
   if (risks.length) {
     const because = risks.map((r) => `Risk rule ${r.rule}: ${r.why}`).join("; ");
-    return trial({ action: "ask", cause: "risk-rule", why: because }, false, because);
+    return ask("risk-rule", because);
   }
   if (autonomy === "auto") return { action: "merge", why: "Autonomy is auto, the Merge gate passed and no Risk rule matched" };
-  return trial({ action: "ask", cause: "autonomy", why: `Autonomy is ${autonomy}: you merge` }, true, "the Merge gate passed and no Risk rule matched");
+  return ask("autonomy", `Autonomy is ${autonomy}: you merge, or \`/approve\` and the Factory merges`, true, "the Merge gate passed and no Risk rule matched");
 }
 
 /**
  * What the Merge gate checkpoint records, in order: `merge-gate-evaluated`, in trial
  * `would-have-merged`, then `checkpoint-evaluated` with what it decided.
  */
-export function mergeGateEvents(head: string, gate: MergeGateResult, decision: MergeDecision): { type: string; data: Record<string, unknown> }[] {
+export function mergeGateEvents(head: string, gate: MergeGateResult, decision: MergeDecision): Required<Pick<NewEvent, "type" | "data">>[] {
   return [
     { type: "merge-gate-evaluated", data: { passed: gate.passed, head, failures: gate.failures } },
     ...(decision.wouldHaveMerged ? [{ type: "would-have-merged", data: { ...decision.wouldHaveMerged } }] : []),

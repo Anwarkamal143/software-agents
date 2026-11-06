@@ -8,7 +8,8 @@ import type { FactoryEvent, NewEvent } from "../events/envelope.js";
 import type { EventLog } from "../jobs/event-log.js";
 import type { JobState } from "../jobs/projection.js";
 import type { Mirror } from "../mirror/mirror.js";
-import { budgetAfterStageRun, budgetBeforeStageRun, spentSince, type BudgetHit } from "../policies/budgets.js";
+import { budgetAfterStageRun, budgetBeforeStageRun, spentToday, type BudgetHit } from "../policies/budgets.js";
+import type { Checkpoint } from "../policies/checkpoint.js";
 import type { PrePushChecks } from "../repos/prepush.js";
 import type { Clones, WorkingCopy } from "../repos/clones.js";
 import type { Source, SourceItem } from "../source/source.js";
@@ -176,15 +177,13 @@ export class Orchestrator {
   }
 
   private softBudgetHit(job: JobState, resolution: Resolution): BudgetHit | null {
-    const now = this.deps.now?.() ?? new Date();
-    const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const daySpent = spentSince(this.deps.log.store.read(), midnight.toISOString());
+    const daySpent = spentToday(this.deps.log.store.read(), this.deps.now?.() ?? new Date());
     return budgetBeforeStageRun({ budgets: resolution.policies.budgets, jobSpent: job.cost_usd, daySpent });
   }
 
   /** A passed Budget sends the Job to paused (budget). */
-  private budgetExceeded(job: JobState, hit: BudgetHit, checkpoint: "before-stage-run" | "after-stage-result", caused_by: string | null) {
-    return this.record({ type: "budget-exceeded", job_id: job.job_id, attempt: job.attempt, actor: "orchestrator", caused_by, data: { ...hit, checkpoint } });
+  private budgetExceeded(job: JobState, hit: BudgetHit, checkpoint: Extract<Checkpoint, "before-stage-run" | "after-stage-result">, caused_by: string | null) {
+    return this.record({ ...jobEvent(job, caused_by), type: "budget-exceeded", data: { ...hit, checkpoint } });
   }
 
   private context(job: JobState): StepContext {
@@ -388,18 +387,11 @@ export class Orchestrator {
     if (repeated.length) {
       return this.askHuman(job, { kind: "approval", cause: "repeated-root-cause", text: `${stage.id} failed again for the same root cause: ${[...new Set(repeated)].join(", ")}.` }, failed.id);
     }
-    return this.record({
-      job_id: job.job_id,
-      attempt: job.attempt,
-      actor: "orchestrator",
-      caused_by: failed.id,
-      type: "bounced",
-      data: { from: stage.id, to: stage.on_fail, bounce: progress.bounces + 1 },
-    });
+    return this.record({ ...jobEvent(job, failed.id), type: "bounced", data: { from: stage.id, to: stage.on_fail, bounce: progress.bounces + 1 } });
   }
 
   private askHuman(job: JobState, data: { kind: "question" | "approval"; cause?: string; text: string; options?: string[] }, caused_by: string | null) {
-    return this.record({ type: "human-requested", job_id: job.job_id, attempt: job.attempt, actor: "orchestrator", caused_by, data });
+    return this.record({ ...jobEvent(job, caused_by), type: "human-requested", data });
   }
 
   /** Records one event and hands it to every Mirror. A Mirror failing never blocks a Job (ADR 0002). */
@@ -420,6 +412,9 @@ export class Orchestrator {
 }
 
 type RunEnvelope = Pick<NewEvent, "job_id" | "attempt" | "stage_run_id" | "actor" | "caused_by">;
+
+/** The envelope of an event the Orchestrator records about a Job's current Attempt. */
+const jobEvent = (job: JobState, caused_by: string | null) => ({ job_id: job.job_id, attempt: job.attempt, actor: "orchestrator" as const, caused_by });
 
 /** Event data stays small; the output artifact holds every violation. */
 const MAX_VIOLATIONS_IN_EVENT = 20;

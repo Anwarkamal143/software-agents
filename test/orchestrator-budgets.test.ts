@@ -24,19 +24,18 @@ describe("Orchestrator: Budgets", () => {
   });
 
   test("past the daily Budget no Job starts a new Stage run, and a running one finishes", async () => {
-    let releaseSecond!: () => void;
-    const secondMayFinish = new Promise<void>((r) => (releaseSecond = r));
-    const f = fakeFactory(
+    // Job 8's triage holds until Job 7's expensive result is in the Event log.
+    const spendRecorded = async () => {
+      while (!f.log.store.read().some((e) => e.type === "stage-passed" && e.data.cost_usd === 0.4)) await new Promise((r) => setTimeout(r, 5));
+    };
+    const f: ReturnType<typeof fakeFactory> = fakeFactory(
       new ScriptedAgent({
         triage: [
-          // Job 7's triage alone passes the $0.35 daily Budget…
+          // The first triage alone passes the $0.35 daily Budget…
+          pass("Expensive triage.", { cost_usd: 0.4 }),
+          // …while the other is still running. It finishes and is recorded.
           async (): Promise<AgentRunOutcome> => {
-            setTimeout(releaseSecond, 20);
-            return pass("Expensive triage.", { cost_usd: 0.4 });
-          },
-          // …while Job 8's triage is still running. It finishes and is recorded.
-          async (): Promise<AgentRunOutcome> => {
-            await secondMayFinish;
+            await spendRecorded();
             return pass("Triaged while over.");
           },
         ],

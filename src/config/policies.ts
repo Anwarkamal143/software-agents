@@ -15,11 +15,12 @@ export const BUILT_IN_POLICIES: Policies = {
 
 /** Built-in Risk rules: auth, payments, migrations and schema, secrets and env files, CI config. */
 export const BUILT_IN_RISK_RULES: RiskRule[] = [
-  { name: "auth", paths: ["**/auth/**"] },
+  { name: "auth", paths: ["**/auth/**", "**/oauth/**"] },
   { name: "payments", paths: ["**/billing/**", "**/payments/**"] },
   { name: "migrations", paths: ["**/migrations/**", "**/schema.sql", "**/*.prisma"] },
-  { name: "secrets", paths: ["**/.env*"], keywords: ["BEGIN PRIVATE KEY"] },
-  { name: "ci-config", paths: [".github/workflows/**"] },
+  // "PRIVATE KEY-----" ends every PEM private key header: plain, RSA, EC, OPENSSH, ENCRYPTED.
+  { name: "secrets", paths: ["**/.env*", "**/*.pem", "**/*.key"], keywords: ["PRIVATE KEY-----"] },
+  { name: "ci-config", paths: [".github/workflows/**", ".github/actions/**"] },
 ];
 
 const AUTONOMY: Autonomy[] = ["off", "trial", "auto"]; // left is stricter

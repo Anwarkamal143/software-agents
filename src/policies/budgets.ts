@@ -3,7 +3,7 @@ import type { FactoryEvent } from "../events/envelope.js";
 
 /** A Budget a Job has passed. It sends the Job to paused (budget). Dollars are always estimates. */
 export interface BudgetHit {
-  budget: "stage_run" | "job" | "daily";
+  budget: keyof Budgets;
   spent_usd: number;
   limit_usd: number;
   why: string;
@@ -13,7 +13,7 @@ const usd = (n: number) => `$${n.toFixed(2)}`;
 
 /**
  * The soft Budgets, checked before each Stage run: once a Job, or the whole Factory
- * today, has spent its Budget, no new Stage run starts. Running ones finish (ADR 0004).
+ * today, has spent its Budget, no new Stage run starts. A Stage run already going finishes (ADR 0004).
  */
 export function budgetBeforeStageRun({ budgets, jobSpent, daySpent }: { budgets: Budgets; jobSpent: number; daySpent: number }): BudgetHit | null {
   if (jobSpent >= budgets.job.usd) {
@@ -38,7 +38,7 @@ export interface StageRunUsage {
 
 /**
  * The hard per-Stage-run Budget, checked after a Stage result: a Run error the adapter
- * put down to the Budget, or a run the Orchestrator measured over any of its limits.
+ * put down to the Budget, or a Stage run the Orchestrator measured over any of its limits.
  */
 export function budgetAfterStageRun({ budget, facts, errorReason }: { budget: Budgets["stage_run"]; facts: StageRunUsage; errorReason?: string }): BudgetHit | null {
   const spent = facts.cost_usd ?? 0;
@@ -49,6 +49,12 @@ export function budgetAfterStageRun({ budget, facts, errorReason }: { budget: Bu
   if (minutes > budget.minutes) return hit(`${Math.round(minutes)} minutes, over its ${budget.minutes}-minute Budget`);
   if (errorReason === "budget") return hit("up its Budget");
   return null;
+}
+
+/** Estimated dollars the whole Factory has spent today, from local midnight: a query over the Event log (ADR 0009). */
+export function spentToday(events: Iterable<Pick<FactoryEvent, "at" | "data">>, now: Date): number {
+  const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  return spentSince(events, midnight.toISOString());
 }
 
 /** Estimated dollars spent on events at or after `since`, across every Job. */

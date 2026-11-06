@@ -54,7 +54,7 @@ export function changedLines(files: ChangedFile[]): number {
 export function matchRiskRules(rules: RiskRule[], { labels, files, sizeCap }: RiskInput): RiskMatch[] {
   const matches: RiskMatch[] = [];
   for (const rule of rules) {
-    const why = firstMatch(rule, labels, files);
+    const why = riskRuleMatch(rule, labels, files);
     if (why) matches.push({ rule: rule.name, why });
   }
   const size = changedLines(files);
@@ -62,7 +62,8 @@ export function matchRiskRules(rules: RiskRule[], { labels, files, sizeCap }: Ri
   return matches;
 }
 
-function firstMatch(rule: RiskRule, labels: string[], files: ChangedFile[]): string | null {
+/** Why `rule` matches, at its first match, or null. */
+function riskRuleMatch(rule: RiskRule, labels: string[], files: ChangedFile[]): string | null {
   const label = rule.labels?.find((l) => labels.includes(l));
   if (label) return `the issue has the ${label} label`;
   for (const glob of rule.paths ?? []) {
