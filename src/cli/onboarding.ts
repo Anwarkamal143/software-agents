@@ -10,7 +10,7 @@ import { factoryInit } from "../onboarding/init.js";
 import { manifestFlow } from "../onboarding/manifest.js";
 import { repoAdd, type Confirmation } from "../onboarding/repo-add.js";
 import { secretSet } from "../onboarding/secret-set.js";
-import { Clones } from "../repos/clones.js";
+import { gitHubClones, type Clones } from "../repos/clones.js";
 import { OsKeychain, type WritableSecretStore } from "../secrets/keychain.js";
 import { SandboxedCheckRunner, srtSandbox, type CheckRunner } from "../stages/check-runner.js";
 import { openSqliteJobStore } from "../store/sqlite-job-store.js";
@@ -71,14 +71,15 @@ export async function repoCommand(args: string[], io: OnboardingIo): Promise<num
     return 2;
   }
   const secrets = io.secrets ?? new OsKeychain();
+  const auth = await githubAuthFromKeychain(secrets, io.fetch);
   const outcome = await repoAdd(
     name,
     { skipBaseline: values["skip-baseline"], backfill: values.backfill, secrets: values.secret },
     {
       home: io.home,
-      clones: io.clones ?? new Clones(io.home, { remoteUrl: (repo) => `https://github.com/${repo}.git` }),
+      clones: io.clones ?? gitHubClones(io.home, auth),
       checks: io.checks ?? new SandboxedCheckRunner({ factoryHome: io.home }),
-      github: new GitHubClient({ auth: await githubAuthFromKeychain(secrets, io.fetch), ...(io.fetch && { fetch: io.fetch }) }),
+      github: new GitHubClient({ auth, ...(io.fetch && { fetch: io.fetch }) }),
       openStore: () => openSqliteJobStore(homePaths(io.home).jobStore),
       secrets,
       askSecret: (secret) => (io.askSecret ?? askHiddenInTerminal)(`Value for check secret ${secret} (not shown): `),
@@ -104,13 +105,16 @@ export async function secretCommand(args: string[], io: OnboardingIo): Promise<n
 export async function doctorCommand(args: string[], io: OnboardingIo): Promise<number> {
   const { values } = parseArgs({ args, options: { baseline: { type: "boolean", default: false } } });
   const sandboxes = { agent: srtSandbox, check: srtSandbox, ...io.doctor?.sandboxes };
+  const secrets = io.secrets ?? new OsKeychain();
+  // Asked for only when a Baseline check reaches GitHub: doctor reports missing credentials itself.
+  const auth = { token: async (repo: string | null) => (await githubAuthFromKeychain(secrets, io.fetch)).token(repo) };
   const checks = await selfChecks(
     {
       home: io.home,
-      secrets: io.secrets ?? new OsKeychain(),
+      secrets,
       sandboxes,
       ...(io.fetch && { fetch: io.fetch }),
-      baseline: { clones: io.clones ?? new Clones(io.home, { remoteUrl: (repo) => `https://github.com/${repo}.git` }), checks: io.checks ?? new SandboxedCheckRunner({ factoryHome: io.home }) },
+      baseline: { clones: io.clones ?? gitHubClones(io.home, auth), checks: io.checks ?? new SandboxedCheckRunner({ factoryHome: io.home }) },
       ...io.doctor,
     },
     { baseline: values.baseline },

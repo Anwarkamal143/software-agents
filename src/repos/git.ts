@@ -27,6 +27,22 @@ export const HARDENED_UPLOAD_PACK = `git ${HARDENING.join(" ")} upload-pack`;
 
 export interface GitOptions {
   cwd: string;
+  /** Extra environment for this one call, such as `remoteAuthEnv`. */
+  env?: Record<string, string>;
+}
+
+/**
+ * The environment that hands git `token` for an https remote: an `Authorization` header scoped
+ * to the remote's origin, as env config so it's never in argv, a remote URL or a config file.
+ * Nothing for any other remote.
+ */
+export function remoteAuthEnv(remoteUrl: string, token: string): Record<string, string> {
+  if (!remoteUrl.startsWith("https://")) return {};
+  return {
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: `http.${new URL(remoteUrl).origin}/.extraHeader`,
+    GIT_CONFIG_VALUE_0: `Authorization: Basic ${Buffer.from(`x-access-token:${token}`).toString("base64")}`,
+  };
 }
 
 /** Runs git as the Orchestrator: hardened, with no system or global config and an empty HOME. */
@@ -49,9 +65,9 @@ export class Git {
     };
   }
 
-  async run(args: string[], { cwd }: GitOptions): Promise<string> {
+  async run(args: string[], { cwd, env }: GitOptions): Promise<string> {
     try {
-      const { stdout } = await run("git", [...HARDENING, ...args], { cwd, env: this.env, maxBuffer: 256 * 1024 * 1024, encoding: "utf8" });
+      const { stdout } = await run("git", [...HARDENING, ...args], { cwd, env: { ...this.env, ...env }, maxBuffer: 256 * 1024 * 1024, encoding: "utf8" });
       return stdout;
     } catch (err) {
       const e = err as { stderr?: string; message: string };

@@ -1,8 +1,9 @@
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
+import type { GitHubAuth } from "../github/auth.js";
 import type { ChangedFile } from "../policies/risk.js";
 import type { SelfEditInput } from "../policies/merge-gate.js";
-import { Git, HARDENED_UPLOAD_PACK } from "./git.js";
+import { Git, HARDENED_UPLOAD_PACK, remoteAuthEnv, type GitOptions } from "./git.js";
 
 /** An Attempt's own clone of the Target repo: the only place its agents may write (ADR 0008). */
 export interface WorkingCopy {
@@ -56,6 +57,13 @@ export interface Change {
 export interface ClonesOptions {
   /** Where the Trusted clone fetches from and pushes to. */
   remoteUrl: (repo: string) => string;
+  /** The Factory's GitHub token for `repo`, asked for on every call that reaches the remote and never written down (ADR 0007). */
+  token?: (repo: string) => Promise<string>;
+}
+
+/** Clones of GitHub repos, fetched and pushed with the Factory's own GitHub token for each repo. */
+export function gitHubClones(home: string, auth: GitHubAuth): Clones {
+  return new Clones(home, { remoteUrl: (repo) => `https://github.com/${repo}.git`, token: (repo) => auth.token(repo) });
 }
 
 /**
@@ -75,6 +83,17 @@ export class Clones {
     this.git = new Git(join(home, "git-home"));
   }
 
+  /** Options for a git call in `cwd` that reaches `repo`'s remote: carries its token, if there is one. */
+  private async remote(repo: string, cwd: string): Promise<GitOptions> {
+    if (!this.options.token) return { cwd };
+    return { cwd, env: remoteAuthEnv(this.options.remoteUrl(repo), await this.options.token(repo)) };
+  }
+
+  /** The repo a Trusted clone, `<home>/repos/<owner>/<name>.git`, is of. */
+  private repoOf(trustedClone: string): string {
+    return relative(join(this.home, "repos"), trustedClone).replace(/\.git$/, "");
+  }
+
   private exclusive<T>(trustedClone: string, work: () => Promise<T>): Promise<T> {
     const previous = this.locks.get(trustedClone) ?? Promise.resolve();
     const next = previous.then(work, work);
@@ -91,7 +110,7 @@ export class Clones {
   private async ensureTrustedClone(repo: string, dir: string): Promise<{ dir: string; defaultBranch: string }> {
     if (!existsSync(join(dir, "HEAD"))) {
       mkdirSync(join(dir, ".."), { recursive: true });
-      await this.git.run(["clone", "--quiet", "--bare", "--template=", this.options.remoteUrl(repo), dir], { cwd: this.home });
+      await this.git.run(["clone", "--quiet", "--bare", "--template=", this.options.remoteUrl(repo), dir], await this.remote(repo, this.home));
       await this.git.run(["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"], { cwd: dir });
     }
     const defaultBranch = (await this.git.run(["symbolic-ref", "--short", "HEAD"], { cwd: dir })).trim();
@@ -102,7 +121,7 @@ export class Clones {
   async startAttempt({ repo, job_id, attempt, branch }: StartAttempt): Promise<WorkingCopy> {
     const trusted = await this.trustedClone(repo);
     const base = await this.exclusive(trusted.dir, async () => {
-      await this.git.run(["fetch", "--quiet", "--prune", "--no-tags", "origin"], { cwd: trusted.dir });
+      await this.git.run(["fetch", "--quiet", "--prune", "--no-tags", "origin"], await this.remote(repo, trusted.dir));
       const sha = (await this.git.run(["rev-parse", `refs/remotes/origin/${trusted.defaultBranch}^{commit}`], { cwd: trusted.dir })).trim();
       await this.git.run(["update-ref", `refs/heads/${branch}`, sha], { cwd: trusted.dir });
       return sha;
@@ -193,8 +212,9 @@ export class Clones {
    */
   async rebaseOntoDefault(wc: WorkingCopy, head: string): Promise<Rebase> {
     const cwd = wc.trustedClone;
+    const origin = () => this.remote(this.repoOf(cwd), cwd);
     return this.exclusive(cwd, async () => {
-      await this.git.run(["fetch", "--quiet", "--prune", "--no-tags", "origin"], { cwd });
+      await this.git.run(["fetch", "--quiet", "--prune", "--no-tags", "origin"], await origin());
       const base = (await this.git.run(["rev-parse", `refs/remotes/origin/${await this.defaultBranchOf(cwd)}^{commit}`], { cwd })).trim();
       if (await this.git.test(["merge-base", "--is-ancestor", base, head], { cwd })) return { kind: "up-to-date", base };
       const dir = join(wc.attemptDir, "rebase");
@@ -209,7 +229,7 @@ export class Clones {
         }
         const rebased = (await this.git.run(["rev-parse", "HEAD"], { cwd: dir })).trim();
         const ref = `refs/heads/${wc.branch}`;
-        await this.git.run(["push", "--quiet", "--no-verify", `--force-with-lease=${ref}:${head}`, "origin", `${rebased}:${ref}`], { cwd });
+        await this.git.run(["push", "--quiet", "--no-verify", `--force-with-lease=${ref}:${head}`, "origin", `${rebased}:${ref}`], await origin());
         await this.git.run(["update-ref", ref, rebased], { cwd });
         // A later Bounce builds on the rebased branch, so the Working copy is made again from it.
         rmSync(wc.path, { recursive: true, force: true });
@@ -231,9 +251,9 @@ export class Clones {
     const { dir: cwd, defaultBranch } = await this.trustedClone(repo);
     const ref = `refs/heads/${branch}`;
     return this.exclusive(cwd, async () => {
-      const remote = (await this.git.run(["ls-remote", "--heads", "origin", ref], { cwd })).split("\t")[0]?.trim();
+      const remote = (await this.git.run(["ls-remote", "--heads", "origin", ref], await this.remote(repo, cwd))).split("\t")[0]?.trim();
       if (remote) return remote;
-      await this.git.run(["fetch", "--quiet", "--prune", "--no-tags", "origin"], { cwd });
+      await this.git.run(["fetch", "--quiet", "--prune", "--no-tags", "origin"], await this.remote(repo, cwd));
       const dir = join(this.home, "reverts", branch.replaceAll("/", "_"));
       rmSync(dir, { recursive: true, force: true });
       mkdirSync(join(dir, ".."), { recursive: true });
@@ -247,7 +267,7 @@ export class Clones {
           return null;
         }
         const head = (await this.git.run(["rev-parse", "HEAD"], { cwd: dir })).trim();
-        await this.git.run(["push", "--quiet", "--no-verify", "origin", `${head}:${ref}`], { cwd });
+        await this.git.run(["push", "--quiet", "--no-verify", "origin", `${head}:${ref}`], await this.remote(repo, cwd));
         await this.git.run(["update-ref", ref, head], { cwd });
         return head;
       } finally {
@@ -296,7 +316,7 @@ export class Clones {
         ["fetch", "--quiet", "--no-tags", "--no-write-fetch-head", `--upload-pack=${HARDENED_UPLOAD_PACK}`, incoming.quarantine, `+refs/incoming/heads/${wc.branch}:${ref}`],
         { cwd: wc.trustedClone },
       );
-      await this.git.run(["push", "--quiet", "--no-verify", `--force-with-lease=${ref}:${remoteHead ?? ""}`, "origin", `${ref}:${ref}`], { cwd: wc.trustedClone });
+      await this.git.run(["push", "--quiet", "--no-verify", `--force-with-lease=${ref}:${remoteHead ?? ""}`, "origin", `${ref}:${ref}`], await this.remote(this.repoOf(wc.trustedClone), wc.trustedClone));
     });
   }
 
@@ -321,10 +341,10 @@ export class Clones {
   async deleteBranches(repo: string, branches: string[]): Promise<string[]> {
     const trusted = await this.trustedClone(repo);
     return this.exclusive(trusted.dir, async () => {
-      const listing = await this.git.run(["ls-remote", "--heads", "origin", ...branches.map((b) => `refs/heads/${b}`)], { cwd: trusted.dir });
+      const listing = await this.git.run(["ls-remote", "--heads", "origin", ...branches.map((b) => `refs/heads/${b}`)], await this.remote(repo, trusted.dir));
       const present = new Set(listing.split("\n").filter(Boolean).map((l) => l.split("\t")[1]!.replace("refs/heads/", "")));
       const existing = branches.filter((b) => present.has(b));
-      if (existing.length) await this.git.run(["push", "--quiet", "--no-verify", "origin", ...existing.map((b) => `:refs/heads/${b}`)], { cwd: trusted.dir });
+      if (existing.length) await this.git.run(["push", "--quiet", "--no-verify", "origin", ...existing.map((b) => `:refs/heads/${b}`)], await this.remote(repo, trusted.dir));
       for (const b of branches) await this.git.test(["update-ref", "-d", `refs/heads/${b}`], { cwd: trusted.dir });
       return branches;
     });
@@ -334,7 +354,7 @@ export class Clones {
   async defaultHead(repo: string): Promise<string> {
     const trusted = await this.trustedClone(repo);
     return this.exclusive(trusted.dir, async () => {
-      await this.git.run(["fetch", "--quiet", "--prune", "--no-tags", "origin"], { cwd: trusted.dir });
+      await this.git.run(["fetch", "--quiet", "--prune", "--no-tags", "origin"], await this.remote(repo, trusted.dir));
       return (await this.git.run(["rev-parse", `refs/remotes/origin/${trusted.defaultBranch}^{commit}`], { cwd: trusted.dir })).trim();
     });
   }
