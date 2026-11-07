@@ -175,13 +175,26 @@ describe("Orchestrator: the Sandbox self-check (ADR 0007)", () => {
     expect(events.some((e) => e.type === "stage-passed" && e.data.stage === "verify")).toBe(true);
   });
 
-  test("the self-check lifts only its own kind of pause", async () => {
-    const f = fakeFactory(new ScriptedAgent({ build: [building] }));
-    f.log.record({ type: "factory-paused", actor: "orchestrator", data: { reason: "check-secret-missing", message: "Check secret X isn't in the keychain" } });
+  test("a start lifts a pause for a missing check secret or sign-in, which the Stage run checks again before spending anything", async () => {
+    const secrets = new FakeSecrets({});
+    const f = fakeFactory(new ScriptedAgent({ build: [building] }), withSecrets, { secrets });
     f.source.push(approved(7));
+    await f.orchestrator.runUntilIdle();
+    expect(f.log.factoryPause()).toMatchObject({ data: { reason: "check-secret-missing" } });
+    f.log.record({ type: "factory-paused", actor: "orchestrator", data: { reason: "sign-in-mismatch", message: "no API key" } });
+    const builds = f.agent.stagesRun().length;
+
+    // Still missing: the restart lifts the pause, and the check pauses again without running anything.
     await f.orchestrator.start();
     await f.orchestrator.runUntilIdle();
-    expect(f.log.store.read().some((e) => e.type === "factory-resumed")).toBe(false);
-    expect(f.agent.stagesRun()).toEqual([]);
+    expect(f.log.factoryPauses().map((p) => p.data.reason)).toEqual(["check-secret-missing"]);
+    expect(f.agent.stagesRun()).toHaveLength(builds);
+
+    // Set: the next start lifts it and the Job carries on.
+    await secrets.set("check.acme.web-app.STRIPE_KEY", "sk_test");
+    await f.orchestrator.start();
+    await f.orchestrator.runUntilIdle();
+    expect(f.log.factoryPauses()).toEqual([]);
+    expect(f.log.store.read().some((e) => e.type === "stage-passed" && e.data.stage === "verify")).toBe(true);
   });
 });

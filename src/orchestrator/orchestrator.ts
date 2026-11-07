@@ -219,13 +219,19 @@ export class Orchestrator {
   }
 
   /**
-   * Startup after the Event log has been replayed (ADR 0010): every Stage run still marked
+   * Startup after the Event log has been replayed (ADR 0010): pauses for a missing check secret or
+   * sign-in are lifted, and the Sandbox self-check runs. Every Stage run still marked
    * running was cut off when the last Orchestrator died, so it is recorded as interrupted,
    * naming its session if it reported one; the next run resumes that session once, or reruns.
    * Jobs parked by the plan limit stay parked until it resets.
    */
   async start(): Promise<void> {
     const started = await this.record({ type: "factory-started", actor: "orchestrator" });
+    // Nothing else lifts these: a restart, after you set the secret or the key, is how they end.
+    for (const reason of RECHECKED_ON_START) {
+      const pause = this.pausedFor(reason);
+      if (pause) await this.record({ type: "factory-resumed", actor: "orchestrator", caused_by: pause.id });
+    }
     await this.selfCheckSandboxes();
     // Running Jobs, and Jobs whose Stage run was held for re-approval when the Orchestrator died.
     for (const job of this.deps.log.jobs().filter((j) => j.status === "running" || (j.status === "waiting" && j.reason === "reapproval"))) {
@@ -1242,6 +1248,13 @@ export class Orchestrator {
 
 /** The `factory-paused` reason while either Sandbox can't confine commands. */
 const SANDBOX_UNAVAILABLE = "sandbox-unavailable" as const;
+
+/**
+ * Factory faults a start lifts: the Stage run that hit one checks again before anything is spent
+ * (a check secret before its commands run, the sign-in before the model's first turn), and pauses
+ * again if it's still wrong.
+ */
+export const RECHECKED_ON_START = ["check-secret-missing", "sign-in-mismatch"] as const;
 
 /** How often a pause for the Sandbox is looked at again. */
 const SANDBOX_RECHECK_MS = 5 * 60_000;

@@ -58,6 +58,21 @@ describe("factory status", () => {
     expect(stdout.split("\n")[0]).toBe("The Factory is paused (sandbox-unavailable): bubblewrap is not installed");
   });
 
+  test("lists every pause in effect, and says a restart lifts one for a missing check secret", async () => {
+    const home = homeWithJobs();
+    const store = openSqliteJobStore(join(home, "factory.db"));
+    store.append({ type: "factory-paused", actor: "orchestrator", data: { reason: "sandbox-unavailable", message: "bubblewrap is not installed" } });
+    store.append({ type: "factory-paused", actor: "orchestrator", data: { reason: "check-secret-missing", message: "Check secret STRIPE_KEY isn't in the keychain." } });
+    store.close();
+
+    const { stdout } = await cli(home, "status");
+
+    expect(stdout.split("\n").slice(0, 2)).toEqual([
+      "The Factory is paused (sandbox-unavailable): bubblewrap is not installed",
+      "The Factory is paused (check-secret-missing): Check secret STRIPE_KEY isn't in the keychain. Once it's fixed, restart the Factory.",
+    ]);
+  });
+
   test("says until when the plan limit parks the Factory", async () => {
     const home = homeWithJobs();
     const store = openSqliteJobStore(join(home, "factory.db"));

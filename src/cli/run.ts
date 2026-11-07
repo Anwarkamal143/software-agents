@@ -9,6 +9,7 @@ import { recordReply, type IgnoredWhy } from "../humans/replies.js";
 import { EventLog } from "../jobs/event-log.js";
 import { homePaths } from "../home.js";
 import { JobProjection, type JobState } from "../jobs/projection.js";
+import { RECHECKED_ON_START } from "../orchestrator/orchestrator.js";
 import type { FactoryEvent } from "../events/envelope.js";
 import type { JobStore } from "../store/job-store.js";
 import { openSqliteJobStore } from "../store/sqlite-job-store.js";
@@ -127,7 +128,8 @@ function describePause(pause: FactoryEvent): string {
   }
   const reason = typeof pause.data.reason === "string" ? ` (${pause.data.reason})` : "";
   const message = typeof pause.data.message === "string" ? `: ${pause.data.message}` : ".";
-  return `The Factory is paused${reason}${message}`;
+  const restart = (RECHECKED_ON_START as readonly unknown[]).includes(pause.data.reason) ? " Once it's fixed, restart the Factory." : "";
+  return `The Factory is paused${reason}${message}${restart}`;
 }
 
 function events(args: string[], io: CliIo): number {
