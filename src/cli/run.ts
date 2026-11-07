@@ -9,7 +9,7 @@ import { recordReply, type IgnoredWhy } from "../humans/replies.js";
 import { EventLog } from "../jobs/event-log.js";
 import { homePaths } from "../home.js";
 import { JobProjection, type JobState } from "../jobs/projection.js";
-import { RECHECKED_ON_START } from "../orchestrator/orchestrator.js";
+import { liftedOnStart, RESTART_TO_LIFT } from "../jobs/faults.js";
 import type { FactoryEvent } from "../events/envelope.js";
 import type { JobStore } from "../store/job-store.js";
 import { openSqliteJobStore } from "../store/sqlite-job-store.js";
@@ -112,13 +112,19 @@ function status(io: CliIo): number {
   }
   const rows = [
     ["JOB", "ISSUE", "STATUS", "STAGE", "REASON", "COST (EST.)"],
-    ...jobs.map((j) => [j.job_id, `${j.repo}#${j.issue}`, j.status, j.stage ?? "-", j.reason ?? "-", `$${j.cost_usd.toFixed(2)}`]),
+    ...jobs.map((j) => [j.job_id, `${j.repo}#${j.issue}`, j.status, j.stage ?? "-", reasonOf(j, projection.pause()), `$${j.cost_usd.toFixed(2)}`]),
   ];
   io.stdout.write(table(rows));
   // Waiting, paused and queued Jobs are never stuck; a long queue only warns (ADR 0010).
   const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
   for (const j of jobs) if (j.status === "queued" && Date.parse(j.updated_at) < dayAgo) io.stdout.write(`warning: Job ${j.job_id} has been queued for over a day.\n`);
   return 0;
+}
+
+/** A Job's reason; one parked by a Factory pause names the pause, whose line above says the rest. */
+function reasonOf(job: JobState, pause: FactoryEvent | null): string {
+  if (job.reason === "factory-paused" && pause?.type === "factory-paused" && typeof pause.data.reason === "string") return `factory-paused: ${pause.data.reason}`;
+  return job.reason ?? "-";
 }
 
 function describePause(pause: FactoryEvent): string {
@@ -128,7 +134,7 @@ function describePause(pause: FactoryEvent): string {
   }
   const reason = typeof pause.data.reason === "string" ? ` (${pause.data.reason})` : "";
   const message = typeof pause.data.message === "string" ? `: ${pause.data.message}` : ".";
-  const restart = (RECHECKED_ON_START as readonly unknown[]).includes(pause.data.reason) ? " Once it's fixed, restart the Factory." : "";
+  const restart = liftedOnStart(pause.data.reason) ? ` ${RESTART_TO_LIFT}` : "";
   return `The Factory is paused${reason}${message}${restart}`;
 }
 

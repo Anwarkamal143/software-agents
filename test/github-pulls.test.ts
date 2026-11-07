@@ -1,12 +1,12 @@
 import { describe, expect, test } from "vitest";
 import { TokenAuth } from "../src/github/auth.js";
-import { GitHubClient, type Fetch } from "../src/github/client.js";
+import { GitHubClient, GitHubRefused, GitHubUnavailable, type Fetch } from "../src/github/client.js";
 import { GitHubPullRequests } from "../src/github/pulls.js";
 
 const REPO = "acme/web-app";
 const SHA = "6dcb09b5b57875f334f61aebed695e2e4193db5e";
 
-type Route = (body: Record<string, unknown>) => { status?: number; body: unknown };
+type Route = (body: Record<string, unknown>) => { status?: number; body: unknown; headers?: Record<string, string> };
 
 /** GitHub answering only the routes a test gives, keyed "METHOD /path"; GraphQL by the mutation or query's first word. */
 function github(routes: Record<string, Route>) {
@@ -19,7 +19,7 @@ function github(routes: Record<string, Route>) {
     const route = routes[key];
     if (!route) return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
     const answer = route(body);
-    return new Response(JSON.stringify(answer.body), { status: answer.status ?? 200, headers: { "content-type": "application/json" } });
+    return new Response(JSON.stringify(answer.body), { status: answer.status ?? 200, headers: { "content-type": "application/json", ...answer.headers } });
   };
   const pulls = new GitHubPullRequests(new GitHubClient({ auth: new TokenAuth("ghp_test"), fetch, sleep: async () => {} }));
   return { pulls, sent };
@@ -130,5 +130,32 @@ describe("GitHubPullRequests", () => {
       "GRAPHQL markPullRequestReadyForReview": () => ({ body: { errors: [{ message: "Resource not accessible by integration" }] } }),
     });
     await expect(pulls.markReady(REPO, 12)).rejects.toThrow("Resource not accessible by integration");
+  });
+
+  test("a 403 for a missing permission is a refusal naming the call and the permission GitHub asks for", async () => {
+    const { pulls } = github(
+      checks(runs({ status: "completed", conclusion: "success" }), () => ({
+        status: 403,
+        body: { message: "Resource not accessible by integration" },
+        headers: { "x-accepted-github-permissions": "statuses=read" },
+      })),
+    );
+    const refused = await pulls.commitChecks(REPO, SHA).catch((err: unknown) => err);
+    expect(refused).toBeInstanceOf(GitHubRefused);
+    expect(refused).toMatchObject({ status: 403, call: `GET /repos/${REPO}/commits/${SHA}/status`, permissions: "statuses=read", detail: "Resource not accessible by integration" });
+  });
+
+  test("a 404 from a call whose answer is needed is a refusal too: the repo can't be seen", async () => {
+    const { pulls } = github({});
+    await expect(pulls.get(REPO, 12)).rejects.toMatchObject({ name: "GitHubRefused", status: 404, call: `GET /repos/${REPO}/pulls/12` });
+  });
+
+  test("a 403 for a secondary rate limit is transient: retried, then GitHub is unavailable", async () => {
+    let tries = 0;
+    const { pulls } = github({
+      [`GET /repos/${REPO}/pulls/12`]: () => (tries++, { status: 403, body: { message: "You have exceeded a secondary rate limit." }, headers: { "retry-after": "60" } }),
+    });
+    await expect(pulls.get(REPO, 12)).rejects.toBeInstanceOf(GitHubUnavailable);
+    expect(tries).toBe(4);
   });
 });

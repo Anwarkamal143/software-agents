@@ -11,7 +11,7 @@ import type { JobState } from "../jobs/projection.js";
 import type { Mirror } from "../mirror/mirror.js";
 import { cleanAgentText } from "../mirror/clean.js";
 import type { PullRequest, PullRequests } from "../github/pulls.js";
-import { GitHubError, GitHubUnavailable } from "../github/client.js";
+import { GitHubError, GitHubRefused, GitHubUnavailable } from "../github/client.js";
 import { approvedAtMergeGate, checksToRerun, decideMerge, evaluateMergeGate, mergeGateEvents, selfEditedChecks, stagesAtGate, type MergeDecision } from "../policies/merge-gate.js";
 import { matchRiskRules } from "../policies/risk.js";
 import type { Finding } from "../stages/result.js";
@@ -31,6 +31,7 @@ import { parseStageResult, STAGE_RESULT_SCHEMA, type StageResult } from "../stag
 import type { ArtifactStore } from "../store/artifact-store.js";
 import { attemptProgress, type AttemptProgress, type PendingAnswer } from "./progress.js";
 import { GIVE_UP_CAUSES, isLive, STAGE_RUN_ENDINGS } from "../jobs/endings.js";
+import { GITHUB_REFUSED, RECHECKED_ON_START } from "../jobs/faults.js";
 import { afterRunError, retryRun } from "./retries.js";
 import { endingWrites, RECORDED_AS, type EndingWrite } from "./ending-writes.js";
 import { MAX_GUARD_DENIALS, SessionWatch, type DenialTally, type RunEnvelope } from "./session-watch.js";
@@ -219,15 +220,15 @@ export class Orchestrator {
   }
 
   /**
-   * Startup after the Event log has been replayed (ADR 0010): pauses for a missing check secret or
-   * sign-in are lifted, and the Sandbox self-check runs. Every Stage run still marked
+   * Startup after the Event log has been replayed (ADR 0010): pauses for a missing check secret,
+   * sign-in or GitHub permission are lifted, and the Sandbox self-check runs. Every Stage run still marked
    * running was cut off when the last Orchestrator died, so it is recorded as interrupted,
    * naming its session if it reported one; the next run resumes that session once, or reruns.
    * Jobs parked by the plan limit stay parked until it resets.
    */
   async start(): Promise<void> {
     const started = await this.record({ type: "factory-started", actor: "orchestrator" });
-    // Nothing else lifts these: a restart, after you set the secret or the key, is how they end.
+    // Nothing else lifts these: a restart, after you set the secret or the key or grant the permission, is how they end.
     for (const reason of RECHECKED_ON_START) {
       const pause = this.pausedFor(reason);
       if (pause) await this.record({ type: "factory-resumed", actor: "orchestrator", caused_by: pause.id });
@@ -497,6 +498,8 @@ export class Orchestrator {
    * allowed person's ready label approves work (ADR 0007).
    */
   private async watchMerges(): Promise<void> {
+    // Refused already: nothing to ask GitHub until a restart, after the fix, lifts the pause.
+    if (this.pausedFor(GITHUB_REFUSED)) return;
     for (const job of this.deps.log.jobs().filter((j) => j.status === "merged")) {
       const events = this.deps.log.eventsFor(job.job_id);
       const merged = events.findLast((e) => e.type === "pr-merged");
@@ -512,7 +515,9 @@ export class Orchestrator {
       try {
         checks = await this.deps.pulls.commitChecks(job.repo, sha);
       } catch (err) {
-        if (gitHubFailed(err)) continue;
+        // A 404 is a merge commit GitHub doesn't show yet: look again next pass. A 403 won't fix itself.
+        if (err instanceof GitHubRefused && err.status === 403) return void (await this.gitHubRefused(err, job.repo, merged.id));
+        if (gitHubAnswered(err)) continue;
         throw err;
       }
       const after = { ...jobEvent(job, merged.id), type: "checkpoint-evaluated" } as const;
@@ -555,7 +560,7 @@ export class Orchestrator {
     } catch (err) {
       // Down: try again next pass. Refused outright: say so and end the watch, rather than ask GitHub every minute.
       if (err instanceof GitHubUnavailable) return;
-      if (!(err instanceof GitHubError)) throw err;
+      if (!(err instanceof GitHubError || err instanceof GitHubRefused)) throw err;
       return void (await this.record(red(` GitHub refused the revert PR: ${err.message}`)));
     }
     if (mergeWith) {
@@ -565,8 +570,9 @@ export class Orchestrator {
         const state = await this.deps.pulls.get(job.repo, revert.number);
         merged = state.state === "merged" || (state.head === head && (await this.deps.pulls.merge(job.repo, revert.number, { sha: head, title: `Revert #${number}`, method: mergeWith })).merged);
       } catch (err) {
-        // The revert PR stands open for you; the watch is over either way.
-        if (!gitHubFailed(err)) throw err;
+        // The revert PR stands open for you; the watch is over either way. A refusal pauses the Factory too, saying why.
+        if (!gitHubAnswered(err)) throw err;
+        if (err instanceof GitHubRefused) await this.gitHubRefused(err, job.repo, caused_by);
       }
     }
     const checked = await this.record(red());
@@ -597,7 +603,7 @@ export class Orchestrator {
         await this.endingWrite(job, write);
       } catch (err) {
         if (err instanceof GitHubUnavailable) return;
-        if (!(err instanceof GitHubError)) throw err;
+        if (!(err instanceof GitHubError || err instanceof GitHubRefused)) throw err;
         refused = err.message;
       }
       const data = { ...("number" in write && { number: write.number }), ...("label" in write && { label: write.label }), ...(refused && { refused }) };
@@ -873,9 +879,9 @@ export class Orchestrator {
     const files_changed = await this.deps.clones.filesChanged(incoming, before, head);
     await this.deps.clones.push(wc, incoming, { remoteHead: progress.pushedHead });
     const pushed = await this.record({ ...run, actor: "orchestrator", type: "branch-pushed", data: { branch: wc.branch, before, head } });
-    // GitHub being down never holds up a Stage run: the Merge gate opens the PR if this couldn't.
+    // GitHub never holds up a Stage run: the Merge gate opens the PR if this couldn't, and says if GitHub refused.
     await this.ensurePr(ctx, pushed.id).catch((err: unknown) => {
-      if (!gitHubFailed(err)) throw err;
+      if (!gitHubAnswered(err)) throw err;
     });
     return { head, files_changed };
   }
@@ -1051,6 +1057,7 @@ export class Orchestrator {
       pr = await this.ensurePr(ctx, ctx.cause ?? "");
       state = await this.deps.pulls.get(job.repo, pr.number);
     } catch (err) {
+      if (err instanceof GitHubRefused) return this.refusedAtMergeGate(ctx, err, ctx.cause);
       if (gitHubFailed(err)) return false;
       throw err;
     }
@@ -1090,6 +1097,27 @@ export class Orchestrator {
       return true;
     }
     return this.merge(ctx, pr, state, rebase!, last!);
+  }
+
+  /** GitHub refused a call the Merge gate needs: the Factory pauses, and the Job says why. */
+  private async refusedAtMergeGate(ctx: StepContext, err: GitHubRefused, caused_by: string | null): Promise<boolean> {
+    const paused = await this.gitHubRefused(err, ctx.job.repo, caused_by);
+    // Said once: a restart before it's fixed pauses again, but the Job has said it already.
+    const why = describeRefusal(err, ctx.job.repo);
+    const said = ctx.events.findLast((e) => e.type === "checkpoint-evaluated" && e.data.checkpoint === "merge-gate");
+    if (said?.data.outcome === GITHUB_REFUSED && said.data.why === why) return true;
+    await this.record({ ...jobEvent(ctx.job, paused.id), type: "checkpoint-evaluated", data: { checkpoint: "merge-gate", outcome: GITHUB_REFUSED, why } });
+    return true;
+  }
+
+  /**
+   * A refusal waiting won't fix is a Factory fault (ADR 0010): the Factory pauses, once, saying
+   * what GitHub refused and what to change. A restart lifts it, and the call is made again.
+   */
+  private async gitHubRefused(err: GitHubRefused, repo: string, caused_by: string | null): Promise<FactoryEvent> {
+    const own = this.pausedFor(GITHUB_REFUSED);
+    if (own) return own;
+    return this.record({ type: "factory-paused", actor: "orchestrator", caused_by, data: { reason: GITHUB_REFUSED, message: describeRefusal(err, repo) } });
   }
 
   /**
@@ -1133,6 +1161,7 @@ export class Orchestrator {
       if (state.draft) await this.deps.pulls.markReady(job.repo, pr.number);
       outcome = await this.deps.pulls.merge(job.repo, pr.number, { sha: head, title: `${cleanAgentText(approval.title, MAX_PR_TITLE - 10)} (#${pr.number})`, method: resolution.mergeMethod });
     } catch (err) {
+      if (err instanceof GitHubRefused) return this.refusedAtMergeGate(ctx, err, caused_by);
       if (gitHubFailed(err)) return false;
       throw err;
     }
@@ -1249,12 +1278,14 @@ export class Orchestrator {
 /** The `factory-paused` reason while either Sandbox can't confine commands. */
 const SANDBOX_UNAVAILABLE = "sandbox-unavailable" as const;
 
-/**
- * Factory faults a start lifts: the Stage run that hit one checks again before anything is spent
- * (a check secret before its commands run, the sign-in before the model's first turn), and pauses
- * again if it's still wrong.
- */
-export const RECHECKED_ON_START = ["check-secret-missing", "sign-in-mismatch"] as const;
+/** What GitHub refused, and what to change. */
+function describeRefusal(err: GitHubRefused, repo: string): string {
+  const refused = `GitHub refused ${err.message}.`;
+  if (err.status === 404) return `${refused} If the Factory's GitHub App isn't installed on ${repo}, or can't see it, install it there.`;
+  if (err.permissions) return `${refused} It needs the permission ${err.permissions}: grant it to the Factory's GitHub App and accept it on the installation.`;
+  return `${refused} The Factory's GitHub App lacks a permission this call needs: check its permissions and the installation's.`;
+}
+
 
 /** How often a pause for the Sandbox is looked at again. */
 const SANDBOX_RECHECK_MS = 5 * 60_000;
@@ -1303,8 +1334,14 @@ function rejectTarget(stages: ResolvedStage[]): string | null {
   return (stages.find((s) => s.kind === "agent" && s.tools === "write-branch") ?? stages[0])?.id ?? null;
 }
 
-/** GitHub couldn't be reached, or refused: either way it's GitHub's answer, never a reason to stop the Factory. */
+/**
+ * GitHub couldn't be reached, or turned one call down: tried again next pass, never a reason to stop
+ * the Factory. A GitHubRefused isn't one of these: waiting won't fix it.
+ */
 const gitHubFailed = (err: unknown) => err instanceof GitHubUnavailable || err instanceof GitHubError;
+
+/** Any answer from GitHub short of success, refusals included: where nothing waits on it, it never stops a step. */
+const gitHubAnswered = (err: unknown): err is GitHubUnavailable | GitHubError | GitHubRefused => gitHubFailed(err) || err instanceof GitHubRefused;
 
 /** GitHub caps PR titles at 256 characters. */
 const MAX_PR_TITLE = 256;
