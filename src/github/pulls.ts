@@ -1,5 +1,5 @@
 import type { MergeMethod } from "../config/types.js";
-import { GitHubError, type GitHubClient } from "./client.js";
+import { GitHubError, GitHubRefused, type GitHubClient } from "./client.js";
 
 // What the Orchestrator does with pull requests (ADR 0001): every PR write is its own, never an agent's.
 
@@ -154,10 +154,11 @@ export class GitHubPullRequests implements PullRequests {
     return this.call<ApiPull>("GET", `/repos/${repo}/pulls/${number}`, repo);
   }
 
-  /** One REST call whose answer is needed: a 404 is an error like any other. */
+  /** One REST call whose answer is needed: a 404 means the repo can't be seen, a refusal waiting won't fix. */
   private async call<T>(method: string, path: string, repo: string, body?: unknown): Promise<T> {
     const res = await this.client.request<T>(method, path, { repo, ...(body !== undefined && { body }) });
-    if (res.status === 404 || res.body === null) throw new GitHubError(res.status, `${method} ${path} → ${res.status}`);
+    if (res.status === 404) throw new GitHubRefused(404, `${method} ${path}`, null, `GitHub can't find it, or won't show it to the Factory`);
+    if (res.body === null) throw new GitHubError(res.status, `${method} ${path} → ${res.status}`);
     return res.body;
   }
 

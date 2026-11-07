@@ -30,6 +30,25 @@ export class GitHubError extends Error {
   }
 }
 
+/**
+ * GitHub refused a call in a way waiting won't fix: a permission the Factory's App lacks (403), or a
+ * repo it can't see (404). A Factory fault, not an outage (ADR 0010).
+ */
+export class GitHubRefused extends GitHubError {
+  override name = "GitHubRefused";
+  constructor(
+    status: number,
+    /** The call refused, as "METHOD /path". */
+    readonly call: string,
+    /** The permissions GitHub said the call needs (`x-accepted-github-permissions`), if it said. */
+    readonly permissions: string | null,
+    /** What GitHub said about it, or what its status means when it said nothing. */
+    readonly detail: string | null,
+  ) {
+    super(status, `${call} → ${status}${detail ? `: ${detail}` : ""}`);
+  }
+}
+
 export interface GitHubClientOptions {
   auth: GitHubAuth;
   fetch?: Fetch;
@@ -60,8 +79,9 @@ export class GitHubClient {
 
   /**
    * One request for `repo` (whose installation token signs it). `etag` makes it conditional.
-   * Throws GitHubAuthError on 401, GitHubUnavailable once transient retries run out, and
-   * GitHubError for any other failure; a 304 and a 404 come back as they are.
+   * Throws GitHubAuthError on 401, GitHubUnavailable once transient retries run out (a rate-limited
+   * 403 among them), GitHubRefused on any other 403, and GitHubError for any other failure; a 304
+   * and a 404 come back as they are.
    */
   async request<T>(method: string, path: string, opts: { repo?: string; etag?: string; body?: unknown } = {}): Promise<GitHubResponse<T>> {
     const url = path.startsWith("http") ? path : `${this.baseUrl}${path}`;
@@ -95,8 +115,9 @@ export class GitHubClient {
       }
       if (response.status === 304) return { status: 304, headers: response.headers, body: null };
       if (response.status === 401) throw new GitHubAuthError(`GitHub refused the Factory's credentials (${method} ${path}).`);
-      // A rate-limited 403 is transient too.
-      const limited = response.status === 403 && response.headers.get("x-ratelimit-remaining") === "0";
+      const text = response.status >= 400 ? await response.text() : null;
+      // A rate-limited 403, primary or secondary, is transient too.
+      const limited = response.status === 403 && (response.headers.get("x-ratelimit-remaining") === "0" || response.headers.has("retry-after") || /rate limit/i.test(text ?? ""));
       if (TRANSIENT.has(response.status) || limited) {
         if (i < BACKOFF_MS.length) {
           await (this.options.sleep ?? sleep)(BACKOFF_MS[i]!);
@@ -104,9 +125,10 @@ export class GitHubClient {
         }
         throw new GitHubUnavailable(`GitHub kept failing: ${method} ${path} → ${response.status}.`);
       }
-      const text = await response.text();
-      const body = text ? (JSON.parse(text) as T) : null;
-      if (response.status >= 400 && response.status !== 404) throw new GitHubError(response.status, `${method} ${path} → ${response.status}: ${text.slice(0, 300)}`);
+      if (response.status === 403) throw new GitHubRefused(403, `${method} ${path}`, response.headers.get("x-accepted-github-permissions"), messageOf(text));
+      const raw = text ?? (await response.text());
+      const body = raw ? (JSON.parse(raw) as T) : null;
+      if (response.status >= 400 && response.status !== 404) throw new GitHubError(response.status, `${method} ${path} → ${response.status}: ${raw.slice(0, 300)}`);
       return { status: response.status, headers: response.headers, body };
     }
   }
@@ -127,6 +149,18 @@ export class GitHubClient {
 export function nextLink(link: string | null): string | null {
   const match = link?.split(",").find((part) => /rel="next"/.test(part))?.match(/<([^>]+)>/);
   return match?.[1] ?? null;
+}
+
+/** GitHub's `message` from an error body, or the body itself, kept short. */
+function messageOf(text: string | null): string | null {
+  if (!text) return null;
+  try {
+    const message = (JSON.parse(text) as { message?: unknown }).message;
+    if (typeof message === "string") return message.slice(0, 300);
+  } catch {
+    // Not JSON: the text is the message.
+  }
+  return text.slice(0, 300);
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));

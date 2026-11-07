@@ -73,6 +73,18 @@ describe("factory status", () => {
     ]);
   });
 
+  test("says what GitHub refused and what to change, and that a restart lifts the pause", async () => {
+    const home = homeWithJobs();
+    const store = openSqliteJobStore(join(home, "factory.db"));
+    const message = "GitHub refused GET /repos/acme/web-app/commits/abc/status (403: Resource not accessible by integration). It needs the permission statuses=read: grant it to the Factory's GitHub App and accept it on the installation.";
+    store.append({ type: "factory-paused", actor: "orchestrator", data: { reason: "github-refused", message } });
+    store.close();
+
+    const { stdout } = await cli(home, "status");
+
+    expect(stdout.split("\n")[0]).toBe(`The Factory is paused (github-refused): ${message} Once it's fixed, restart the Factory.`);
+  });
+
   test("says until when the plan limit parks the Factory", async () => {
     const home = homeWithJobs();
     const store = openSqliteJobStore(join(home, "factory.db"));

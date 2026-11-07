@@ -8,6 +8,7 @@ import { fixture } from "./helpers/config.js";
 import { factoryAt, fakeFactory } from "./helpers/factory.js";
 import type { JobStore } from "../src/store/job-store.js";
 import { JobStoreUnwritable } from "../src/orchestrator/orchestrator.js";
+import { GitHubRefused, GitHubUnavailable } from "../src/github/client.js";
 import { agentGit, commitAll, writeIn } from "./helpers/git.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -223,6 +224,26 @@ describe("PRs and merging", () => {
       expect(remoteHas(f.remote, "refs/heads/factory/7-revert-101")).toBe(false);
     });
 
+    test("a revert merge GitHub refuses for a permission leaves the revert PR open for you and pauses the Factory, saying why", async () => {
+      const { f, job, sha } = await merged("auto");
+      f.pulls.checksOf.set(sha, "red");
+      f.pulls.refuse = (what) => (what === "merge 102" ? new GitHubRefused(403, "PUT /repos/acme/web-app/pulls/102/merge", "contents=write", "Resource not accessible by integration") : null);
+
+      await f.orchestrator.runUntilIdle();
+
+      expect(f.log.eventsFor(job.job_id).find((e) => e.type === "reverted")?.data).toMatchObject({ revert_pr: 102, merged: false });
+      expect(f.log.factoryPause()).toMatchObject({ data: { reason: "github-refused", message: expect.stringContaining("contents=write") } });
+    });
+
+    test("a 404 for the merge commit's checks at the post-merge watch waits, rather than pausing the Factory", async () => {
+      const { f, sha } = await merged("auto");
+      f.pulls.refuse = (what) => (what.startsWith("checks ") ? new GitHubRefused(404, `GET /repos/acme/web-app/commits/${sha}/check-runs`, null, "Not Found") : null);
+
+      await f.orchestrator.runUntilIdle();
+
+      expect(f.log.factoryPauses()).toEqual([]);
+    });
+
     test("after an /approve'd merge in trial, a red run opens the revert PR for you to merge", async () => {
       const { f, job, sha } = await merged("trial");
       f.pulls.checksOf.set(sha, "red");
@@ -313,6 +334,57 @@ describe("PRs and merging", () => {
     f.pulls.down = false;
     await f.orchestrator.runUntilIdle();
     expect(f.types(f.onlyJob().job_id).slice(-4)).toEqual(["pr-opened", "merge-gate-evaluated", "checkpoint-evaluated", "pr-merged"]);
+  });
+
+  test("a permission GitHub refuses at the Merge gate pauses the Factory, naming the call and the permission; a restart once it's granted carries on", async () => {
+    const f = fakeFactory(new ScriptedAgent({ build: [building] }), withAutonomy("auto"));
+    const call = "GET /repos/acme/web-app/commits/abc123/status";
+    f.pulls.refuse = (what) => (what.startsWith("get ") ? new GitHubRefused(403, call, "statuses=read", "Resource not accessible by integration") : null);
+    f.source.push(approved(7));
+
+    await f.orchestrator.runUntilIdle();
+
+    const job = f.onlyJob();
+    const pause = f.log.factoryPause()!;
+    expect(pause).toMatchObject({ type: "factory-paused", data: { reason: "github-refused" } });
+    expect(String(pause.data.message)).toContain(call);
+    expect(String(pause.data.message)).toContain("statuses=read");
+    expect(job).toMatchObject({ status: "paused", reason: "factory-paused" });
+    // Said on the Job too, caused by the pause.
+    const said = f.log.eventsFor(job.job_id).at(-1)!;
+    expect(said).toMatchObject({ type: "checkpoint-evaluated", caused_by: pause.id, data: { checkpoint: "merge-gate", outcome: "github-refused", why: pause.data.message } });
+
+    // Not asked again and again while paused.
+    const seen = f.log.store.read().length;
+    await f.orchestrator.runUntilIdle();
+    expect(f.log.store.read()).toHaveLength(seen);
+
+    f.pulls.refuse = null;
+    await f.orchestrator.start();
+    await f.orchestrator.runUntilIdle();
+    expect(f.log.factoryPauses()).toEqual([]);
+    expect(f.onlyJob().status).toBe("merged");
+  });
+
+  test("an outage at the Merge gate (GitHub kept failing) waits quietly: no pause, nothing recorded", async () => {
+    const f = fakeFactory(new ScriptedAgent({ build: [building] }), withAutonomy("auto"));
+    f.source.push(approved(7));
+    let outage = true;
+    const get = f.pulls.get.bind(f.pulls);
+    f.pulls.get = async (repo, number) => {
+      if (outage) throw new GitHubUnavailable("GitHub kept failing: GET /repos/acme/web-app/commits/abc/status → 503.");
+      return get(repo, number);
+    };
+
+    await f.orchestrator.runUntilIdle();
+    const job = f.onlyJob();
+    expect(f.log.factoryPauses()).toEqual([]);
+    expect(job).toMatchObject({ status: "queued", stage: "security" });
+    expect(f.types(job.job_id)).not.toContain("checkpoint-evaluated");
+
+    outage = false;
+    await f.orchestrator.runUntilIdle();
+    expect(f.onlyJob().status).toBe("merged");
   });
 
   test("a merge GitHub won't do whatever the head (branch protection) goes to a human instead of being tried again and again", async () => {

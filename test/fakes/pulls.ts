@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { GitHubError, GitHubUnavailable } from "../../src/github/client.js";
+import { GitHubError, GitHubRefused, GitHubUnavailable } from "../../src/github/client.js";
 import type { ChecksState, MergeOutcome, OpenPullRequest, PullRequest, PullRequests } from "../../src/github/pulls.js";
 import { agentGit } from "../helpers/git.js";
 
@@ -41,11 +41,15 @@ export class FakePullRequests implements PullRequests {
   refuseMerges: string | null = null;
   /** GitHub refuses to open PRs. */
   refuseOpens = false;
+  /** GitHub refuses calls outright, a missing permission say: what to throw for a call ("get 101"), or null to answer it. */
+  refuse: ((call: string) => GitHubRefused | null) | null = null;
 
   constructor(private readonly remote: string) {}
 
   private call(what: string) {
     if (this.down) throw new GitHubUnavailable("GitHub can't be reached");
+    const refused = this.refuse?.(what);
+    if (refused) throw refused;
     this.calls.push(what);
   }
 

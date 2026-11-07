@@ -246,6 +246,16 @@ describe("GitHub Mirror", () => {
     expect(s.comments().some((b) => b.includes("still waiting for an answer"))).toBe(true);
   });
 
+  test("a GitHub refusal at the Merge gate says on the issue what was refused, what to change, and to restart", async () => {
+    const s = setup();
+    const why = "GitHub refused GET /repos/acme/web-app/commits/abc/status (403: Resource not accessible by integration). It needs the permission statuses=read.";
+    await s.mirror.write(update("checkpoint-evaluated", { status: "paused", stage: "security", reason: "factory-paused" }, { checkpoint: "merge-gate", outcome: "github-refused", why }));
+    await s.mirror.drain();
+    const told = s.comments().find((b) => b.includes("GitHub refused"))!;
+    expect(told).toContain(why);
+    expect(told).toContain("restart the Factory");
+  });
+
   test("a write that failed partway is retried without posting its comment twice", async () => {
     const s = setup();
     await s.mirror.write(update("job-approved"));

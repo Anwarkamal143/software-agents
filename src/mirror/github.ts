@@ -44,7 +44,7 @@ const REFUSED = new Set([400, 404, 410, 422]);
 
 /** One comment an event asks for, beyond the status label and comment. */
 interface Post {
-  part: "request" | "reminder" | "reply" | "pr-link" | "ending";
+  part: "request" | "reminder" | "reply" | "pr-link" | "ending" | "fault";
   /** The issue or PR it goes on. */
   number: number;
   body: string;
@@ -296,7 +296,7 @@ export class GitHubMirror implements Mirror {
 /**
  * The comments an event asks for besides the status: the Human request itself, replies to Reply
  * commands sent on GitHub that came too late or while the Job wasn't waiting, the three-day
- * reminder, and the one-line link on a PR the Factory opened. Replies from the CLI get none.
+ * reminder, the one-line link on a PR the Factory opened, and what GitHub refused at the Merge gate. Replies from the CLI get none.
  */
 function posts({ event, job }: MirrorUpdate): Post[] {
   const d = event.data;
@@ -307,6 +307,10 @@ function posts({ event, job }: MirrorUpdate): Post[] {
       return [{ part: "reminder", number: job.issue, body: renderReminder(event) }];
     case "pr-opened":
       return typeof d.number === "number" ? [{ part: "pr-link", number: d.number, body: renderPrLink(job) }] : [];
+    case "checkpoint-evaluated":
+      // A Factory fault holding the Job: what GitHub refused and what to change (ADR 0010).
+      if (d.outcome !== "github-refused" || typeof d.why !== "string") return [];
+      return [{ part: "fault", number: job.issue, body: `${FACTORY_MARKER} The Factory is paused: ${cleanAgentText(d.why, 600)} Once it's fixed, restart the Factory.` }];
     case "reply-ignored":
       if (d.channel !== "github") return [];
       if (d.why === "already-answered") return [{ part: "reply", number: job.issue, body: renderAlreadyAnswered(event) }];
