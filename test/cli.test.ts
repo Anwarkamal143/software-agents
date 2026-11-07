@@ -179,7 +179,7 @@ describe("factory onboarding commands", () => {
     const r = await run(home, ["secret", "set", "acme/web-app", "DATABASE_URL"], { secrets, readStdin: async () => "postgres://x\n" });
 
     expect(r).toMatchObject({ code: 0, stdout: "Stored DATABASE_URL in the keychain. acme/web-app's Check Stages get it as $DATABASE_URL.\n" });
-    expect(await secrets.get("DATABASE_URL")).toBe("postgres://x");
+    expect(await secrets.get("check.acme.web-app.DATABASE_URL")).toBe("postgres://x");
     expect((await run(home, ["secret", "set", "acme/web-app"])).code).toBe(2);
   });
 

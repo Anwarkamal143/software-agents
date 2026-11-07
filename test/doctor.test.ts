@@ -115,6 +115,20 @@ describe("factory doctor --baseline", () => {
     };
     expect((await run(false)).find((c) => c.name === "baseline:acme/web-app")).toMatchObject({ ok: true });
     expect((await run(true)).find((c) => c.name === "baseline:acme/web-app")).toMatchObject({ ok: false, detail: expect.stringMatching(/^Check Stage "verify": `node --test` exited 1 on [0-9a-f]{7}\.$/) });
+    // A check secret counts only under the repo's own keychain name.
+    const withSecret = config.replace('commands: { verify: ["node --test"] }', 'commands: { verify: ["node --test"] }\n    check_secrets: [DATABASE_URL]');
+    const home = healthyHome(withSecret);
+    const remote = nodeRemote(join(home, "github"));
+    const baselineDeps = (secrets: Record<string, string>) =>
+      deps(home, {
+        secrets: new FakeSecrets({ [GITHUB_SECRETS.appId]: "1001", [GITHUB_SECRETS.privateKey]: PRIVATE_KEY, ...secrets }),
+        baseline: { clones: new Clones(home, { remoteUrl: () => remote }), checks: new SandboxedCheckRunner({ factoryHome: home }) },
+      });
+    expect((await selfChecks(baselineDeps({ DATABASE_URL: "bare" }), { baseline: true })).find((c) => c.name === "baseline:acme/web-app")).toMatchObject({
+      ok: false,
+      detail: "Check secret DATABASE_URL isn't in the keychain (`factory secret set acme/web-app DATABASE_URL`).",
+    });
+    expect((await selfChecks(baselineDeps({ "check.acme.web-app.DATABASE_URL": "x" }), { baseline: true })).find((c) => c.name === "baseline:acme/web-app")).toMatchObject({ ok: true });
     // Without --baseline, no Baseline check.
     expect((await selfChecks(deps(healthyHome()))).some((c) => c.name.startsWith("baseline:"))).toBe(false);
   });

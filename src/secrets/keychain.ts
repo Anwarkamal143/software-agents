@@ -14,6 +14,16 @@ export interface WritableSecretStore extends SecretStore {
 /** The keychain service every Factory secret is stored under. */
 export const KEYCHAIN_SERVICE = "software-factory";
 
+/**
+ * The keychain name a Target repo's check secret is stored under: `check.<owner>.<repo>.<NAME>`.
+ * Per repo, so two repos' `DATABASE_URL`s never meet, and never one of the Factory's own credentials.
+ * Owners and `NAME`s have no dots, so the name can't be read back as another repo's.
+ */
+export function checkSecretKey(repo: string, name: string): string {
+  const [owner, repoName] = repo.split("/");
+  return `check.${owner}.${repoName}.${name}`;
+}
+
 /** Runs the OS keychain tool, with `stdin` as its input. */
 export type RunSecurityTool = (file: string, args: string[], stdin?: string) => Promise<{ code: number; stdout: string }>;
 

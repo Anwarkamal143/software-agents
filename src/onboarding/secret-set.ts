@@ -1,8 +1,7 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { loadConfig } from "../config/load.js";
 import { homePaths } from "../home.js";
-import { GITHUB_SECRETS } from "../github/auth.js";
-import type { WritableSecretStore } from "../secrets/keychain.js";
+import { checkSecretKey, type WritableSecretStore } from "../secrets/keychain.js";
 import { addCheckSecret } from "./config-edit.js";
 
 export interface SecretSetDeps {
@@ -13,15 +12,11 @@ export interface SecretSetDeps {
 
 /**
  * `factory secret set <repo> <NAME>` (ADR 0011): reads a check secret from stdin into the
- * keychain, so it never lands in shell history, a file or `factory.yaml`, which only names it.
- * The repo's Check Stages get it as the env var `NAME`.
+ * keychain under a name of the repo's own (`checkSecretKey`), so it never lands in shell history,
+ * a file or `factory.yaml`, which only names it. The repo's Check Stages get it as the env var `NAME`.
  */
 export async function secretSet(repo: string, name: string, readValue: () => Promise<string>, deps: SecretSetDeps): Promise<void> {
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new Error(`"${name}" isn't a check secret name: it becomes an env var, so use letters, digits and _, such as DATABASE_URL.`);
-  // Check secrets share the keychain with the Factory's own credentials: never let one replace them.
-  if ((Object.values(GITHUB_SECRETS) as string[]).includes(name) || name === "ANTHROPIC_API_KEY") {
-    throw new Error(`${name} is the Factory's own credential, not a check secret: pick another name (\`factory init\` sets the Factory's credentials).`);
-  }
   const path = homePaths(deps.home).config;
   if (!existsSync(path)) throw new Error(`No config at ${path}: run \`factory init\` first.`);
   const text = readFileSync(path, "utf8");
@@ -29,7 +24,7 @@ export async function secretSet(repo: string, name: string, readValue: () => Pro
   const updated = addCheckSecret(text, repo, name);
   const value = (await readValue()).replace(/\r?\n$/, "");
   if (!value) throw new Error("The value is empty: pipe it in, or type it and press Ctrl-D.");
-  await deps.secrets.set(name, value);
+  await deps.secrets.set(checkSecretKey(repo, name), value);
   if (updated !== text) {
     const loaded = loadConfig(updated);
     if (!loaded.ok) throw new Error(`Stored ${name} in the keychain, but naming it in factory.yaml would fail the config check:\n${loaded.problems.map((p) => `  - ${p}`).join("\n")}`);

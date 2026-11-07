@@ -24,7 +24,7 @@ import { renderBrief, renderHumanInput, type StageBrief } from "../stages/brief.
 import { parseReplyCommand } from "../humans/commands.js";
 import type { Notifier } from "../humans/notify.js";
 import { recordMalformedReply, recordReply } from "../humans/replies.js";
-import type { SecretStore } from "../secrets/keychain.js";
+import { checkSecretKey, type SecretStore } from "../secrets/keychain.js";
 import { SandboxUnavailable, type CheckRun, type CheckRunner } from "../stages/check-runner.js";
 import { parseStageResult, STAGE_RESULT_SCHEMA, type StageResult } from "../stages/result.js";
 import type { ArtifactStore } from "../store/artifact-store.js";
@@ -845,8 +845,10 @@ export class Orchestrator {
     // Only this repo's check secrets, read by the Orchestrator itself; nothing else of its environment.
     const secrets: Record<string, string> = {};
     for (const name of stage.secrets!) {
-      const value = await this.deps.secrets.get(name);
-      if (value === null) return { kind: "fault", reason: "check-secret-missing", message: `Check secret ${name} isn't in the keychain (set it with \`factory secret set ${name}\`).` };
+      const value = await this.deps.secrets.get(checkSecretKey(ctx.job.repo, name));
+      if (value === null) {
+        return { kind: "fault", reason: "check-secret-missing", message: `Check secret ${name} isn't in the keychain for ${ctx.job.repo} (set it with \`factory secret set ${ctx.job.repo} ${name}\`).` };
+      }
       secrets[name] = value;
     }
     const dir = await this.deps.clones.checkStageCopy(wc, head, run.stage_run_id!);

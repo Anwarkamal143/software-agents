@@ -19,7 +19,7 @@ export interface ResolvedStage {
   commands?: string[];
   /** The hosts commands may reach, from the repo's `network`. An Agent Stage gets them only if it writes the branch. */
   network?: string[];
-  /** Check Stages: keychain names of the secrets the commands get, from the repo's `check_secrets`. */
+  /** Check Stages: names of the repo's secrets the commands get (its `check_secrets`), kept in the keychain under `checkSecretKey`. */
   secrets?: string[];
   when?: StageCondition;
 }

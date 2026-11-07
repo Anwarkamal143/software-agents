@@ -8,7 +8,7 @@ import { AppAuth, githubAuthFromKeychain, GITHUB_SECRETS, type GitHubAuth } from
 import { GitHubClient, type Fetch } from "../github/client.js";
 import { homePaths } from "../home.js";
 import type { Clones } from "../repos/clones.js";
-import type { SecretStore } from "../secrets/keychain.js";
+import { checkSecretKey, type SecretStore } from "../secrets/keychain.js";
 import { resolveSecretRef } from "../secrets/refs.js";
 import type { CheckRunner, Sandbox } from "../stages/check-runner.js";
 import { openSqliteJobStore } from "../store/sqlite-job-store.js";
@@ -151,7 +151,7 @@ export async function selfChecks(deps: DoctorDeps, { baseline = false } = {}): P
       await check(`baseline:${repo.name}`, `Fix ${repo.name}'s default branch so its Check Stages pass: every Job there would fail.`, async () => {
         const secrets: Record<string, string> = {};
         for (const name of repo.check_secrets ?? []) {
-          const value = await deps.secrets.get(name);
+          const value = await deps.secrets.get(checkSecretKey(repo.name, name));
           if (value === null) throw new Error(`Check secret ${name} isn't in the keychain (\`factory secret set ${repo.name} ${name}\`).`);
           secrets[name] = value;
         }

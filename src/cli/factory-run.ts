@@ -14,7 +14,7 @@ import { Orchestrator } from "../orchestrator/orchestrator.js";
 import { runFactory } from "../orchestrator/foreground.js";
 import { Clones } from "../repos/clones.js";
 import { PrePushChecks } from "../repos/prepush.js";
-import { OsKeychain, type SecretStore } from "../secrets/keychain.js";
+import { checkSecretKey, OsKeychain, type SecretStore } from "../secrets/keychain.js";
 import { resolveSecretRef } from "../secrets/refs.js";
 import { GitHubSource } from "../source/github.js";
 import { renderSelfChecks, selfChecks } from "../onboarding/doctor.js";
@@ -51,7 +51,7 @@ export async function factoryRun(home: string, signal: AbortSignal, report: (s: 
       pluginDir: FACTORY_PLUGIN_DIR,
       // Exact values never to write to a Transcript: every Factory credential and check secret (ADR 0009).
       secrets: async () => {
-        const names = [...Object.values(GITHUB_SECRETS), ...config.current.repos.flatMap((r) => r.check_secrets ?? [])];
+        const names = [...Object.values(GITHUB_SECRETS), ...config.current.repos.flatMap((r) => (r.check_secrets ?? []).map((name) => checkSecretKey(r.name, name)))];
         const out: Record<string, string> = {};
         for (const name of names) {
           const value = await secrets.get(name).catch(() => null);
