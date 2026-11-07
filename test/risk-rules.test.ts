@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 import { BUILT_IN_RISK_RULES } from "../src/config/policies.js";
 import { changedLines, matchRiskRules, type ChangedFile } from "../src/policies/risk.js";
 
-const file = (path: string, addedLines: string[] = ["x"], removed = 0): ChangedFile => ({ path, added: addedLines.length, removed, addedLines });
+const file = (path: string, addedLines: string[] = ["x"], removed = 0): ChangedFile => ({ path, status: "modified", added: addedLines.length, removed, addedLines });
 const lines = (n: number) => Array.from({ length: n }, (_, i) => `line ${i}`);
 const check = (files: ChangedFile[], labels: string[] = [], sizeCap = 400) =>
   matchRiskRules(BUILT_IN_RISK_RULES, { labels, files, sizeCap });
@@ -56,7 +56,7 @@ describe("matchRiskRules: configured rules", () => {
   });
 
   test("a keyword only counts in added lines", () => {
-    const removedOnly: ChangedFile = { path: "db/seed.sql", added: 1, removed: 1, addedLines: ["-- tidy"] };
+    const removedOnly: ChangedFile = { path: "db/seed.sql", status: "modified", added: 1, removed: 1, addedLines: ["-- tidy"] };
     expect(matchRiskRules(rules, { labels: [], files: [removedOnly], sizeCap: 400 })).toEqual([]);
     expect(matchRiskRules(rules, { labels: [], files: [file("db/seed.sql", ["DROP TABLE users;"])], sizeCap: 400 })).toHaveLength(1);
   });

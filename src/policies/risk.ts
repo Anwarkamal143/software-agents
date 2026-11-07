@@ -4,6 +4,8 @@ import type { RiskRule } from "../config/types.js";
 /** One file of an Attempt's change against its base, as the Orchestrator measured it. */
 export interface ChangedFile {
   path: string;
+  /** What the change does to the file. A type change (file to symlink) counts as modified. */
+  status: "added" | "modified" | "deleted";
   added: number;
   removed: number;
   /** The text of each added line, for keyword matching. */

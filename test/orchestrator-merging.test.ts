@@ -88,6 +88,42 @@ describe("PRs and merging", () => {
     expect(f.pulls.of("factory/7")?.draft).toBe(false);
   });
 
+  test("the Merge gate's approval request lists each changed file as added, modified or deleted, and links to the PR's diff", async () => {
+    const reshapes = (req: AgentRunRequest) => {
+      writeIn(req.workingCopy.dir, "built.txt", "built\n");
+      writeIn(req.workingCopy.dir, "src/app.ts", "export const app = 2;\n");
+      rmSync(join(req.workingCopy.dir, "README.md"));
+      commitAll(req.workingCopy.dir, "Reshape");
+      return pass("Reshaped.");
+    };
+    const f = fakeFactory(new ScriptedAgent({ build: [reshapes] }), withAutonomy("trial"));
+    f.source.push(approved(7));
+
+    await f.orchestrator.runUntilIdle();
+
+    const request = f.log.eventsFor(f.onlyJob().job_id).at(-1)!;
+    expect(request).toMatchObject({ type: "human-requested", data: { kind: "approval", cause: "autonomy" } });
+    const url = f.log.store.read().find((e) => e.type === "pr-opened")!.data.url;
+    expect(String(request.data.text)).toContain(`The PR changes 3 files ([see the diff](${url}/files)):\n- deleted \`README.md\`\n- added \`built.txt\`\n- modified \`src/app.ts\``);
+  });
+
+  test("an approval request for a PR that only deletes files says so", async () => {
+    const deletes = (req: AgentRunRequest) => {
+      rmSync(join(req.workingCopy.dir, "README.md"));
+      commitAll(req.workingCopy.dir, "Delete the README");
+      return pass("Done.");
+    };
+    // verify looks for built.txt, which a build that only deletes never writes.
+    const f = fakeFactory(new ScriptedAgent({ build: [deletes] }), withAutonomy("trial").replace(`'test -f "$PWD/built.txt"'`, "'true'"));
+    f.source.push(approved(7));
+
+    await f.orchestrator.runUntilIdle();
+
+    const request = f.log.eventsFor(f.onlyJob().job_id).at(-1)!;
+    expect(request).toMatchObject({ type: "human-requested", data: { kind: "approval", cause: "autonomy" } });
+    expect(String(request.data.text)).toMatch(/The PR only deletes files \(\[see the diff\]\(\S+\/files\)\):\n- deleted `README.md`$/);
+  });
+
   test("after /approve, the Factory merges through the gate, and the ending deletes the branches and the Working copy", async () => {
     const f = fakeFactory(new ScriptedAgent({ build: [building] }), withAutonomy("off"));
     f.source.push(approved(7));

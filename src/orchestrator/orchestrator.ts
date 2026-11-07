@@ -13,7 +13,7 @@ import { cleanAgentText } from "../mirror/clean.js";
 import type { PullRequest, PullRequests } from "../github/pulls.js";
 import { GitHubError, GitHubRefused, GitHubUnavailable } from "../github/client.js";
 import { approvedAtMergeGate, checksToRerun, decideMerge, evaluateMergeGate, mergeGateEvents, selfEditedChecks, stagesAtGate, type MergeDecision } from "../policies/merge-gate.js";
-import { matchRiskRules } from "../policies/risk.js";
+import { matchRiskRules, type ChangedFile } from "../policies/risk.js";
 import type { Finding } from "../stages/result.js";
 import { FACTORY_MARKER } from "../humans/commands.js";
 import { budgetAfterStageRun, budgetBeforeStageRun, spentToday, type BudgetHit } from "../policies/budgets.js";
@@ -1127,7 +1127,11 @@ export class Orchestrator {
       // Nothing but your say-so stands in the way: the PR is ready for you to review, or merge yourself.
       if (gate.passed && state.draft) await this.deps.pulls.markReady(job.repo, pr.number).catch(() => null);
       const would = decision.wouldHaveMerged;
-      const text = would ? `${decision.why}\n\nIn auto, the Factory ${would.would ? "would have merged" : "wouldn't have merged"}: ${would.why}.` : decision.why;
+      const parts = [decision.why];
+      if (would) parts.push(`In auto, the Factory ${would.would ? "would have merged" : "wouldn't have merged"}: ${would.why}.`);
+      // What you're approving: the files the PR changes, if its head is the one the gate measured.
+      if (ours) parts.push(describeChange(change.files, pr.url));
+      const text = parts.join("\n\n");
       await this.askHuman(ctx, { kind: "approval", cause: decision.cause, text }, last);
       return true;
     }
@@ -1385,6 +1389,19 @@ const MAX_PR_TITLE = 256;
 const MAX_VIOLATIONS_IN_EVENT = 20;
 
 const instant = (run: () => Promise<unknown>): Plan => ({ kind: "instant", run: async () => (await run(), true) });
+
+/** The most changed files an approval request lists; the diff has the rest. */
+const MAX_FILES_IN_REQUEST = 50;
+
+/** The files a PR changes, for the human approving it: each one added, modified or deleted, with a link to the diff. */
+function describeChange(files: ChangedFile[], prUrl: string): string {
+  const diff = `[see the diff](${prUrl}/files)`;
+  if (!files.length) return `The PR changes no files (${diff}).`;
+  const lead = files.every((f) => f.status === "deleted") ? "The PR only deletes files" : `The PR changes ${files.length} file${files.length === 1 ? "" : "s"}`;
+  const listed = files.slice(0, MAX_FILES_IN_REQUEST).map((f) => `- ${f.status} \`${f.path}\``);
+  if (files.length > MAX_FILES_IN_REQUEST) listed.push(`- and ${files.length - MAX_FILES_IN_REQUEST} more`);
+  return [`${lead} (${diff}):`, ...listed].join("\n");
+}
 
 /** What a gate that decided to merge records instead, when the branch first had to be rebased. */
 function rebaseCheckpoint(rebase: Rebase): { outcome: string; why: string } | Record<string, never> {
