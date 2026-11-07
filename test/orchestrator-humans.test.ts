@@ -156,7 +156,7 @@ describe("Orchestrator: Human requests and Reply commands", () => {
     await f.orchestrator.runUntilIdle();
 
     expect(f.onlyJob()).toMatchObject({ status: "failed", reason: "review failed after 3 Bounces (cap 3). Round 4." });
-    expect(f.log.store.read().at(-1)).toMatchObject({ type: "job-failed", actor: "human:alice", data: { reason: "review failed after 3 Bounces (cap 3). Round 4." } });
+    expect(f.log.store.read().findLast((e) => e.type === "job-failed")).toMatchObject({ actor: "human:alice", data: { reason: "review failed after 3 Bounces (cap 3). Round 4." } });
     expect(existsSync(join(f.home, "work", job_id))).toBe(true);
     expect(agentGit(f.remote, "rev-parse", "--verify", "-q", "refs/heads/factory/7")).toMatch(/^[0-9a-f]{40}$/);
     // Only a human starts the next Attempt.
@@ -173,7 +173,7 @@ describe("Orchestrator: Human requests and Reply commands", () => {
     await f.orchestrator.runUntilIdle();
 
     expect(f.onlyJob()).toMatchObject({ status: "cancelled", reason: "cancelled by cli" });
-    expect(f.log.store.read().at(-1)).toMatchObject({ type: "job-cancelled", actor: "cli" });
+    expect(f.log.store.read().findLast((e) => e.type === "job-cancelled")).toMatchObject({ actor: "cli" });
     expect(existsSync(join(f.home, "work", job_id))).toBe(false);
   });
 

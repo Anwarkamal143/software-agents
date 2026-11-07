@@ -42,6 +42,13 @@ export interface PullRequests {
   open(repo: string, pr: OpenPullRequest): Promise<{ number: number; url: string }>;
   get(repo: string, number: number): Promise<PullRequest>;
   markReady(repo: string, number: number): Promise<void>;
+  /** Closes the PR without merging it. */
+  close(repo: string, number: number): Promise<void>;
+  /** Turns an open PR back into a draft. */
+  toDraft(repo: string, number: number): Promise<void>;
+  /** Takes a label off an issue; one already gone is fine. A Job's ending changes its issue as well as its PR. */
+  removeLabel(repo: string, issue: number, label: string): Promise<void>;
+  reopenIssue(repo: string, issue: number): Promise<void>;
   /** Merges the PR only if its head is still `sha`. */
   merge(repo: string, number: number, opts: { sha: string; title: string; method: MergeMethod }): Promise<MergeOutcome>;
   /** How the checks on one commit stand, such as the default branch's first after a merge. */
@@ -66,7 +73,7 @@ const RED_CONCLUSIONS = new Set(["failure", "cancelled", "timed_out", "action_re
 
 /**
  * Pull requests through GitHub's REST API, with GraphQL where REST has no way: marking a draft
- * ready. Every call is the Factory's own, signed for the repo.
+ * ready, and turning one back into a draft. Every call is the Factory's own, signed for the repo.
  */
 export class GitHubPullRequests implements PullRequests {
   constructor(private readonly client: GitHubClient) {}
@@ -100,6 +107,25 @@ export class GitHubPullRequests implements PullRequests {
   async markReady(repo: string, number: number) {
     const { node_id } = await this.pull(repo, number);
     await this.graphql(repo, "mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){pullRequest{number}}}", { id: node_id });
+  }
+
+  async close(repo: string, number: number) {
+    await this.call("PATCH", `/repos/${repo}/pulls/${number}`, repo, { state: "closed" });
+  }
+
+  async toDraft(repo: string, number: number) {
+    const { node_id, draft, state } = await this.pull(repo, number);
+    if (draft || state !== "open") return;
+    await this.graphql(repo, "mutation($id:ID!){convertPullRequestToDraft(input:{pullRequestId:$id}){pullRequest{number}}}", { id: node_id });
+  }
+
+  async removeLabel(repo: string, issue: number, label: string) {
+    // A 404 is the label being gone already: what was wanted.
+    await this.client.request("DELETE", `/repos/${repo}/issues/${issue}/labels/${encodeURIComponent(label)}`, { repo });
+  }
+
+  async reopenIssue(repo: string, issue: number) {
+    await this.call("PATCH", `/repos/${repo}/issues/${issue}`, repo, { state: "open" });
   }
 
   async merge(repo: string, number: number, { sha, title, method }: { sha: string; title: string; method: MergeMethod }): Promise<MergeOutcome> {

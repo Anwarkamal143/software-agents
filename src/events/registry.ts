@@ -146,7 +146,15 @@ export const V1_EVENTS: EventRegistry = {
   "would-have-merged": { version: 1, data: obj({ would: { type: "boolean" } }, { why: str }) },
   // Merged by a human (`by`, actor `human:<login>`), or by the Factory (actor `orchestrator`) as the commit `sha`.
   "pr-merged": { version: 2, data: obj({}, { number: int, by: str, sha: str }), upgrades: { 1: sameData } },
-  "pr-closed": { version: 1, data: obj({}, { number: int }) },
+  // Closed without merging: by a human (actor `human:<login>`), or by the Factory as a cancelled Job's ending.
+  // An ending write GitHub refused outright says so in `refused`, and isn't tried again.
+  "pr-closed": { version: 2, data: obj({}, { number: int, refused: str }), upgrades: { 1: sameData } },
+  // A failed Job's PR, turned back into a draft by the Factory (ADR 0010).
+  "pr-drafted": { version: 1, data: obj({ number: { type: "integer", minimum: 1 } }, { refused: str }) },
+  // The Factory took the ready label off the issue: a cancelled or reverted Job's, so only re-labelling starts the next.
+  "ready-label-removed": { version: 1, data: obj({ label: str }, { refused: str }) },
+  // The Factory reopened the issue of a Job whose merge it reverted.
+  "issue-reopened": { version: 1, data: obj({}, { refused: str }) },
   // The post-merge watch saw the default branch go red and opened `revert_pr`; `merged` if the Factory merged it (in auto).
   reverted: { version: 2, data: obj({}, { revert_pr: int, why: str, merged: { type: "boolean" } }), upgrades: { 1: sameData } },
   // Factory-wide

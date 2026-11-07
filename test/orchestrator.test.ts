@@ -299,7 +299,7 @@ describe("Orchestrator: one Job end to end", () => {
     f.source.push({ kind: "unapproved", repo: "acme/web-app", issue: 7, by: "alice" });
     await f.orchestrator.runUntilIdle();
     expect(f.onlyJob()).toMatchObject({ status: "cancelled", reason: "ready label removed" });
-    expect(f.mirror.summary().at(-1)).toEqual(["job-cancelled", "cancelled", null]);
+    expect(f.mirror.summary().findLast(([type]) => type === "job-cancelled")).toEqual(["job-cancelled", "cancelled", null]);
   });
 
   test("the same Check Stage command failing twice is a repeated root cause, even when its output differs", async () => {

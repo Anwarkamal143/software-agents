@@ -399,67 +399,52 @@ describe("GitHub Mirror", () => {
   });
 });
 
-describe("GitHub Mirror: how a Job's ending shows on GitHub", () => {
+describe("GitHub Mirror: what a Job's ending says on GitHub", () => {
   const opened = async (s: ReturnType<typeof setup>) => {
     s.github.label(REPO, ISSUE, "2026-11-01T09:01:00Z", "alice");
     await s.mirror.write(update("job-approved"));
     await s.mirror.write(update("pr-opened", { status: "running", stage: "build" }, { number: 12 }));
   };
+  /** The Mirror is read-only (ADR 0001): it never changes a PR, an issue's state or its ready label. */
+  const changedNothing = (s: ReturnType<typeof setup>) => {
+    expect(s.github.requests.filter((r) => (r.method === "PATCH" && !r.path.includes("/comments/")) || (r.method === "DELETE" && r.path.includes("factory%3Aready")) || r.path === "/graphql")).toEqual([]);
+    expect(s.github.prState.get(`${REPO}#12`)).toEqual({ state: "open", draft: false });
+    expect(s.github.labelNames(REPO, ISSUE)).toContain("factory:ready");
+  };
 
-  test("cancelled closes the PR with a comment and takes the ready label off", async () => {
+  test("cancelled says so on the PR, and changes nothing else", async () => {
     const s = setup();
     await opened(s);
     await s.mirror.write(update("job-cancelled", { status: "cancelled", reason: "cancelled by human:alice" }, { reason: "cancelled by human:alice" }));
     await s.mirror.drain();
 
-    expect(s.github.prState.get(`${REPO}#12`)?.state).toBe("closed");
-    expect(s.comments(12).at(-1)).toContain("Job `01JOB` was cancelled, so the Factory closed this PR.");
-    expect(s.github.labelNames(REPO, ISSUE)).toEqual(["factory:cancelled"]);
+    expect(s.comments(12).at(-1)).toContain("Job `01JOB` was cancelled, so the Factory closes this PR.");
+    changedNothing(s);
   });
 
-  test("failed turns the PR into a draft and says on the issue how to retry", async () => {
+  test("failed says on the issue how to retry", async () => {
     const s = setup();
     await opened(s);
     await s.mirror.write(update("job-failed", { status: "failed", reason: "gave up" }, { reason: "gave up" }));
     await s.mirror.drain();
 
-    expect(s.github.mutations).toEqual([{ name: "convertPullRequestToDraft", id: "PR_12" }]);
-    expect(s.github.prState.get(`${REPO}#12`)).toEqual({ state: "open", draft: true });
     const told = s.comments().find((b) => b.includes("Working copy are kept"))!;
     expect(told).toContain("remove and re-apply `factory:ready`, or run `factory retry 01JOB`");
     expect(told).toContain("kept for 7 days");
-    expect(s.github.labelNames(REPO, ISSUE)).toContain("factory:ready");
+    changedNothing(s);
   });
 
-  test("a revert reopens the issue with the reason and takes the ready label off, so only re-labelling starts a new Job", async () => {
+  test("a revert says why on the issue, and that re-labelling starts the next Job", async () => {
     const s = setup();
     await opened(s);
-    s.github.setIssueState(REPO, ISSUE, "closed"); // the merge closed it
     await s.mirror.write(update("pr-merged", { status: "merged" }, { number: 12, sha: "abc123" }));
     await s.mirror.write(update("reverted", { status: "merged" }, { revert_pr: 13, merged: false, why: "CI on the default branch went red at abc123 after #12 merged." }));
     await s.mirror.drain();
 
-    expect(s.github.issueState(REPO, ISSUE)).toBe("open");
     const told = s.comments().find((b) => b.includes("went red"))!;
     expect(told).toContain("CI on the default branch went red at abc123 after #12 merged.");
     expect(told).toContain("#13 reverts it and waits for you to merge it.");
     expect(told).toContain("apply `factory:ready` again");
-    expect(s.github.labelNames(REPO, ISSUE)).not.toContain("factory:ready");
-  });
-
-  test("an ending half delivered when GitHub went down is finished once, not repeated", async () => {
-    const s = setup();
-    await opened(s);
-    await s.mirror.drain();
-    await s.mirror.write(update("job-cancelled", { status: "cancelled" }, { reason: "x" }));
-    // Closing the PR and its comment get through; then GitHub goes down.
-    s.github.failAfter = s.github.requests.length + 3;
-    await s.mirror.drain();
-    s.github.failAfter = null;
-    await s.mirror.drain();
-
-    expect(s.github.requests.filter((r) => r.method === "PATCH" && r.path === `/repos/${REPO}/pulls/12`)).toHaveLength(1);
-    expect(s.comments(12).filter((b) => b.includes("was cancelled"))).toHaveLength(1);
-    expect(s.github.labelNames(REPO, ISSUE)).toEqual(["factory:cancelled"]);
+    changedNothing(s);
   });
 });

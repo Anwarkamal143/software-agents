@@ -17,7 +17,7 @@ export interface GitHubMirrorOptions {
   schedule?: (run: () => void, ms: number) => void;
   /** Milliseconds since the epoch; backoff is timed from it. */
   now?: () => number;
-  /** The label that approves a Job; an ending that must be re-approved takes it off. Read at each delivery. */
+  /** The label that approves a Job, named in what an ending tells you to do next. Read at each delivery. */
   readyLabel?: () => string;
   /** Told about each write dropped after GitHub kept refusing it, so it can be recorded. */
   onDropped?: (update: MirrorUpdate, why: string) => void;
@@ -166,12 +166,6 @@ export class GitHubMirror implements Mirror {
       entry.done.push(post.part);
       this.outbox.save(name, entry);
     }
-    for (const [part, write] of this.endingWrites(entry.item)) {
-      if (entry.done.includes(part)) continue;
-      await write();
-      entry.done.push(part);
-      this.outbox.save(name, entry);
-    }
     const status = renderStatusComment(job, this.written(job.job_id).pr ?? null);
     const changed = this.written(job.job_id).body !== status;
     await this.ensureLabel(job, changed);
@@ -179,35 +173,16 @@ export class GitHubMirror implements Mirror {
   }
 
   /**
-   * What a Job's ending changes on GitHub besides the status (ADR 0010), each write safe to repeat:
-   * cancelled closes the PR and takes the ready label off; failed turns the PR into a draft; a
-   * revert reopens the issue and takes the ready label off, so only re-labelling starts a new Job.
+   * The comment a Job's ending posts: on its PR when cancelled, or on the issue. The Orchestrator
+   * makes the ending itself show on GitHub (closing or drafting the PR, the ready label, reopening);
+   * the Mirror only says why (ADR 0001).
    */
-  private endingWrites({ event, job }: MirrorUpdate): [string, () => Promise<void>][] {
-    const pr = this.written(job.job_id).pr?.number;
-    const unlabel: [string, () => Promise<void>] = [
-      "unlabel-ready",
-      async () => void (await this.options.client.request("DELETE", `/repos/${job.repo}/issues/${job.issue}/labels/${encodeURIComponent(this.readyLabel())}`, { repo: job.repo })),
-    ];
-    switch (event.type) {
-      case "job-cancelled":
-        return [...(pr ? [["close-pr", () => this.send("PATCH", `/repos/${job.repo}/pulls/${pr}`, job.repo, { state: "closed" }).then(() => undefined)] as [string, () => Promise<void>]] : []), unlabel];
-      case "job-failed":
-        return pr ? [["draft-pr", () => this.toDraft(job.repo, pr)]] : [];
-      case "reverted":
-        return [["reopen-issue", () => this.send("PATCH", `/repos/${job.repo}/issues/${job.issue}`, job.repo, { state: "open" }).then(() => undefined)], unlabel];
-      default:
-        return [];
-    }
-  }
-
-  /** The comment an ending posts: on the closed PR, or on the issue. */
   private endingPosts({ event, job }: MirrorUpdate): Post[] {
     const pr = this.written(job.job_id).pr?.number;
     const id = job.job_id;
     switch (event.type) {
       case "job-cancelled":
-        return pr ? [{ part: "ending", number: pr, body: `${FACTORY_MARKER} Job \`${id}\` was cancelled, so the Factory closed this PR.` }] : [];
+        return pr ? [{ part: "ending", number: pr, body: `${FACTORY_MARKER} Job \`${id}\` was cancelled, so the Factory closes this PR.` }] : [];
       case "job-failed": {
         const why = typeof event.data.reason === "string" ? `: ${cleanAgentText(event.data.reason, 300)}` : "";
         const body = [FACTORY_MARKER, `Job \`${id}\` failed${why}.`, "", `Its draft PR, branches and Working copy are kept for 7 days. To try again, remove and re-apply \`${this.readyLabel()}\`, or run \`factory retry ${id}\`.`, ""];
@@ -222,16 +197,6 @@ export class GitHubMirror implements Mirror {
       default:
         return [];
     }
-  }
-
-  private async toDraft(repo: string, number: number): Promise<void> {
-    const pr = await this.send<{ node_id: string; draft?: boolean; state: string }>("GET", `/repos/${repo}/pulls/${number}`, repo);
-    if (pr.body?.draft || pr.body?.state !== "open") return;
-    const res = await this.send<{ errors?: { message: string }[] }>("POST", "/graphql", repo, {
-      query: "mutation($id:ID!){convertPullRequestToDraft(input:{pullRequestId:$id}){pullRequest{id}}}",
-      variables: { id: pr.body.node_id },
-    });
-    if (res.body?.errors?.length) throw new GitHubError(422, `GraphQL: ${res.body.errors.map((e) => e.message).join("; ")}`);
   }
 
   private readyLabel(): string {

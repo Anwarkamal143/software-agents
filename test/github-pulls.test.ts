@@ -95,6 +95,35 @@ describe("GitHubPullRequests", () => {
     expect(sent.filter((r) => r.path === "/graphql").map((r) => r.body.variables)).toEqual([{ id: "PR_node12" }]);
   });
 
+  test("a Job's ending: close the PR, turn it back into a draft, take the ready label off, reopen the issue", async () => {
+    const { pulls, sent } = github({
+      [`PATCH /repos/${REPO}/pulls/12`]: () => ({ body: pull({ state: "closed" }) }),
+      [`GET /repos/${REPO}/pulls/12`]: () => ({ body: pull({ draft: false }) }),
+      "GRAPHQL convertPullRequestToDraft": () => ({ body: { data: { convertPullRequestToDraft: { pullRequest: { number: 12 } } } } }),
+      [`PATCH /repos/${REPO}/issues/7`]: () => ({ body: { number: 7, state: "open" } }),
+    });
+
+    await pulls.close(REPO, 12);
+    await pulls.toDraft(REPO, 12);
+    // Not there any more (GitHub answers 404): already what was wanted.
+    await pulls.removeLabel(REPO, 7, "factory:ready");
+    await pulls.reopenIssue(REPO, 7);
+
+    expect(sent.map((r) => [r.method, r.path, r.path === "/graphql" ? r.body.variables : r.body])).toEqual([
+      ["PATCH", `/repos/${REPO}/pulls/12`, { state: "closed" }],
+      ["GET", `/repos/${REPO}/pulls/12`, {}],
+      ["POST", "/graphql", { id: "PR_node12" }],
+      ["DELETE", `/repos/${REPO}/issues/7/labels/factory%3Aready`, {}],
+      ["PATCH", `/repos/${REPO}/issues/7`, { state: "open" }],
+    ]);
+  });
+
+  test("a PR already a draft isn't converted again", async () => {
+    const { pulls, sent } = github({ [`GET /repos/${REPO}/pulls/12`]: () => ({ body: pull({ draft: true }) }) });
+    await pulls.toDraft(REPO, 12);
+    expect(sent.filter((r) => r.path === "/graphql")).toEqual([]);
+  });
+
   test("a GraphQL error is an error, not a quiet success", async () => {
     const { pulls } = github({
       [`GET /repos/${REPO}/pulls/12`]: () => ({ body: pull() }),

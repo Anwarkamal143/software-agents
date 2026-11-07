@@ -47,10 +47,8 @@ export class FakeGitHub {
   readonly comments = new Map<string, FakeComment[]>();
   private readonly issues = new Map<string, FakeIssue>();
   private readonly pulls = new Map<string, string>();
-  /** Each PR's state and draft flag, as the Factory's writes left them. */
+  /** Each PR's state and draft flag. */
   readonly prState = new Map<string, { state: "open" | "closed"; draft: boolean }>();
-  /** GraphQL mutations the Factory sent, by name and PR node id. */
-  readonly mutations: { name: string; id: string }[] = [];
 
   issue(repo: string, number: number, over: { title?: string; body?: string; labels?: string[]; pr?: { branch: string }; at?: string } = {}): this {
     const at = over.at ?? "2026-11-01T09:00:00Z";
@@ -169,26 +167,11 @@ export class FakeGitHub {
       const branch = this.pulls.get(key);
       if (!branch) return json({ message: "Not Found" }, {}, 404);
       const state = this.prState.get(key)!;
-      if (init.method === "PATCH" && sent.state === "closed") state.state = "closed";
       return json(recorded("pull", { number: Number(m[2]), node_id: `PR_${m[2]}`, ...state, head: { label: `acme:${branch}`, ref: branch, sha: "6dcb09b5" } }));
-    }
-    if ((m = u.pathname.match(/^\/repos\/([^/]+\/[^/]+)\/issues\/(\d+)$/)) && init.method === "PATCH") {
-      const issue = this.issues.get(`${m[1]}#${m[2]}`)?.issue;
-      if (!issue) return json({ message: "Not Found" }, {}, 404);
-      if (typeof sent.state === "string") issue.state = sent.state;
-      return json(issue);
     }
     if ((m = u.pathname.match(/^\/repos\/([^/]+\/[^/]+)\/collaborators\/([^/]+)\/permission$/))) {
       const permission = this.permissions.get(decodeURIComponent(m[2]!));
       return permission ? json(recorded("permission", { permission, role_name: permission })) : json({ message: "Not Found" }, {}, 404);
-    }
-    const mutation = u.pathname === "/graphql" ? /mutation[^{]*\{\s*(\w+)/.exec(String(sent.query))?.[1] : undefined;
-    if (mutation) {
-      const id = String((sent.variables as Entry).id);
-      this.mutations.push({ name: mutation, id });
-      const pr = [...this.prState.entries()].find(([k]) => `PR_${k.split("#")[1]}` === id)?.[1];
-      if (pr && mutation === "convertPullRequestToDraft") pr.draft = true;
-      return json({ data: { [mutation]: { pullRequest: { id } } } });
     }
     if (u.pathname === "/graphql") return json(recorded("graphql-editor", { data: { repository: { issueOrPullRequest: { editor: this.editor ? { login: this.editor } : null } } } }));
     return json({ message: "Not Found" }, {}, 404);
@@ -202,14 +185,6 @@ export class FakeGitHub {
 
   private newComment(login: string, body: string, app: boolean): FakeComment {
     return { id: ids++, body, user: { login, type: app ? "Bot" : "User" }, performed_via_github_app: app ? { slug: "factory-app" } : null };
-  }
-
-  setIssueState(repo: string, number: number, state: "open" | "closed"): void {
-    this.get(repo, number).issue.state = state;
-  }
-
-  issueState(repo: string, number: number): string {
-    return String(this.get(repo, number).issue.state);
   }
 
   labelNames(repo: string, number: number): string[] {

@@ -203,15 +203,19 @@ describe("PRs and merging", () => {
 
       const events = f.log.eventsFor(job.job_id);
       const revert = f.pulls.of("factory/7-revert-101")!;
-      expect(events.slice(-2).map((e) => [e.type, e.data])).toEqual([
+      expect(events.slice(-4).map((e) => [e.type, e.data])).toEqual([
         ["checkpoint-evaluated", { checkpoint: "after-merge", outcome: "red", why: `CI on the default branch went red at ${sha.slice(0, 12)} after #101 merged.` }],
         ["reverted", { revert_pr: revert.number, merged: true, why: `CI on the default branch went red at ${sha.slice(0, 12)} after #101 merged.` }],
+        ["issue-reopened", {}],
+        ["ready-label-removed", { label: "factory:ready" }],
       ]);
       expect(revert.state).toBe("merged");
+      expect(f.pulls.reopened).toEqual([7]);
+      expect(f.pulls.labelsRemoved).toEqual(["7 factory:ready"]);
       expect(() => agentGit(f.remote, "show", "main:built.txt")).toThrow();
       expect(f.onlyJob()).toMatchObject({ status: "merged" });
 
-      // The revert reopens the issue (through the Mirror): that alone starts nothing, and the watch is over.
+      // Reopening the issue starts nothing on its own, and the watch is over.
       f.source.push({ kind: "reopened", repo: "acme/web-app", issue: 7, by: "alice" });
       await f.orchestrator.runUntilIdle();
       expect(f.log.jobs()).toHaveLength(1);
@@ -225,7 +229,7 @@ describe("PRs and merging", () => {
 
       await f.orchestrator.runUntilIdle();
 
-      expect(f.log.eventsFor(job.job_id).at(-1)).toMatchObject({ type: "reverted", data: { merged: false } });
+      expect(f.log.eventsFor(job.job_id).findLast((e) => e.type === "reverted")).toMatchObject({ data: { merged: false } });
       expect(f.pulls.of("factory/7-revert-101")).toMatchObject({ state: "open", draft: false });
       expect(agentGit(f.remote, "show", "main:built.txt")).toMatch(/^build/);
     });
@@ -249,7 +253,7 @@ describe("PRs and merging", () => {
     });
   });
 
-  test("each ending leaves what it should: cancelled deletes branches and the Working copy; failed keeps both", async () => {
+  test("each ending leaves what it should: cancelled closes the PR, takes the ready label off and deletes branches and the Working copy; failed drafts the PR and keeps both", async () => {
     const f = fakeFactory(new ScriptedAgent({ build: [building, building] }), withAutonomy("trial"));
     f.source.push(approved(7), approved(8));
     await f.orchestrator.runUntilIdle();
@@ -260,13 +264,39 @@ describe("PRs and merging", () => {
     await f.orchestrator.runUntilIdle();
 
     expect(f.log.job(seven!.job_id)?.status).toBe("cancelled");
+    expect(f.pulls.of("factory/7")).toMatchObject({ state: "closed" });
+    expect(f.pulls.labelsRemoved).toEqual(["7 factory:ready"]);
     expect(remoteHas(f.remote, "refs/heads/factory/7")).toBe(false);
     expect(existsSync(join(f.home, "work", seven!.job_id))).toBe(false);
+    expect(f.log.eventsFor(seven!.job_id).filter((e) => e.type === "pr-closed" || e.type === "ready-label-removed").map((e) => [e.type, e.actor])).toEqual([
+      ["pr-closed", "orchestrator"],
+      ["ready-label-removed", "orchestrator"],
+    ]);
+
     expect(f.log.job(eight!.job_id)?.status).toBe("failed");
+    expect(f.pulls.of("factory/8")).toMatchObject({ state: "open", draft: true });
+    expect(f.log.eventsFor(eight!.job_id).at(-1)).toMatchObject({ type: "pr-drafted", data: { number: f.pulls.of("factory/8")!.number } });
     expect(remoteHas(f.remote, "refs/heads/factory/8")).toBe(true);
     expect(existsSync(join(f.home, "work", eight!.job_id))).toBe(true);
-    // The Mirror closes the cancelled Job's PR and drafts the failed one's (see the GitHub Mirror's tests).
-    expect(f.mirror.writes.some((w) => w.event.type === "job-cancelled")).toBe(true);
+  });
+
+  test("an ending GitHub can't take now is written once it's back, and only once", async () => {
+    const f = fakeFactory(new ScriptedAgent({ build: [building] }), withAutonomy("trial"));
+    f.source.push(approved(7));
+    await f.orchestrator.runUntilIdle();
+    f.pulls.down = true;
+    f.source.push(comment(7, "/cancel"));
+    await f.orchestrator.runUntilIdle();
+    expect(f.onlyJob().status).toBe("cancelled");
+    expect(f.pulls.of("factory/7")?.state).toBe("open");
+
+    f.pulls.down = false;
+    await f.orchestrator.runUntilIdle();
+    await f.orchestrator.runUntilIdle();
+
+    expect(f.pulls.of("factory/7")?.state).toBe("closed");
+    expect(f.pulls.calls.filter((c) => c.startsWith("close"))).toHaveLength(1);
+    expect(f.pulls.labelsRemoved).toEqual(["7 factory:ready"]);
   });
 
   test("while GitHub is down, Stage runs carry on and the merge waits; once it's back, the PR opens and the Job merges", async () => {
@@ -375,7 +405,7 @@ describe("PRs and merging", () => {
     await restarted.orchestrator.start();
     await restarted.orchestrator.runUntilIdle();
 
-    expect(restarted.log.eventsFor(job_id).at(-1)).toMatchObject({ type: "reverted", data: { revert_pr: 102, merged: true } });
+    expect(restarted.log.eventsFor(job_id).filter((e) => e.type === "reverted")).toMatchObject([{ data: { revert_pr: 102, merged: true } }]);
     expect(f.pulls.calls.filter((c) => c.startsWith("open factory/7-revert"))).toHaveLength(1);
     expect(f.pulls.calls.filter((c) => c === "merge 102")).toHaveLength(1);
     expect(remoteHas(f.remote, "refs/heads/factory/7-revert-101")).toBe(false);

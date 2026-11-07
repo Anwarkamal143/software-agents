@@ -31,6 +31,10 @@ export class FakePullRequests implements PullRequests {
   /** Runs just before GitHub looks at a merge's head, as someone pushing in between would. */
   beforeMerge: ((pr: FakePr) => void) | null = null;
   readonly calls: string[] = [];
+  /** Labels taken off issues, as "<issue> <label>". */
+  readonly labelsRemoved: string[] = [];
+  /** Issues reopened. */
+  readonly reopened: number[] = [];
   /** How each merge was asked for. */
   readonly methods: string[] = [];
   /** GitHub won't merge, whatever the head: branch protection, say. */
@@ -104,6 +108,27 @@ export class FakePullRequests implements PullRequests {
   async commitChecks(_repo: string, sha: string) {
     this.call(`checks ${sha.slice(0, 7)}`);
     return this.checksOf.get(sha) ?? this.checks;
+  }
+
+  async close(_repo: string, number: number) {
+    this.call(`close ${number}`);
+    const pr = this.pr(number);
+    if (pr.state === "open") pr.state = "closed";
+  }
+
+  async toDraft(_repo: string, number: number) {
+    this.call(`draft ${number}`);
+    this.pr(number).draft = true;
+  }
+
+  async removeLabel(_repo: string, issue: number, label: string) {
+    this.call(`unlabel ${issue}`);
+    this.labelsRemoved.push(`${issue} ${label}`);
+  }
+
+  async reopenIssue(_repo: string, issue: number) {
+    this.call(`reopen ${issue}`);
+    this.reopened.push(issue);
   }
 
   /** The PR from `branch`, newest first. */

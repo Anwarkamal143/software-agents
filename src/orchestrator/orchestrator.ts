@@ -31,6 +31,7 @@ import type { ArtifactStore } from "../store/artifact-store.js";
 import { attemptProgress, type AttemptProgress, type PendingAnswer } from "./progress.js";
 import { GIVE_UP_CAUSES, isLive, STAGE_RUN_ENDINGS } from "../jobs/endings.js";
 import { afterRunError, retryRun } from "./retries.js";
+import { endingWrites, RECORDED_AS, type EndingWrite } from "./ending-writes.js";
 import { MAX_GUARD_DENIALS, SessionWatch, type DenialTally, type RunEnvelope } from "./session-watch.js";
 
 export interface OrchestratorDeps {
@@ -153,6 +154,7 @@ export class Orchestrator {
       await this.poll();
       await this.remind();
       await this.watchMerges();
+      await this.showEndings();
     } catch (err) {
       fault(err);
     }
@@ -307,6 +309,7 @@ export class Orchestrator {
         if (!live || !this.deps.config.current.humans.includes(item.by)) return;
         const reason = item.kind === "unapproved" ? "ready label removed" : `issue closed by ${item.by}`;
         await this.record({ type: "job-cancelled", job_id: live.job_id, attempt: live.attempt, actor: `human:${item.by}`, data: { reason } });
+        await this.showEnding(live);
         await this.cleanUp(live);
         return;
       }
@@ -422,7 +425,7 @@ export class Orchestrator {
    * The checkpoint after a merge (ADR 0004): for `post_merge_watch_minutes` after the Factory
    * merges, it looks at the default branch's first CI run, the one on the merge commit. Green, or
    * no result in time, ends the watch; red opens a revert PR, merged by the Factory in auto and left
-   * for you otherwise. The Mirror reopens the issue with the reason. No new Job starts: only an
+   * for you otherwise. The issue is reopened, and the Mirror says why. No new Job starts: only an
    * allowed person's ready label approves work (ADR 0007).
    */
   private async watchMerges(): Promise<void> {
@@ -500,8 +503,52 @@ export class Orchestrator {
     }
     const checked = await this.record(red());
     await this.record({ ...jobEvent(job, checked.id), type: "reverted", data: { revert_pr: revert.number, merged, why } });
+    await this.showEnding(job);
     // Only once recorded: until then, the branch is how a restart finds this revert again.
     if (merged) await this.deps.clones.deleteBranches(job.repo, [branch]).catch(() => null);
+  }
+
+  /** Every ended Job's ending writes GitHub couldn't take yet: they go now, if GitHub can take them. */
+  private async showEndings(): Promise<void> {
+    for (const job of this.deps.log.jobs().filter((j) => !isLive(j))) await this.showEnding(job);
+  }
+
+  /**
+   * Makes the Job's ending show on GitHub (ADR 0010): closes or drafts its PR, reopens a reverted
+   * issue, takes the ready label off. Each write done is recorded, so none is made twice; one
+   * GitHub refuses outright is recorded with why, and not tried again. While GitHub is down they
+   * wait for the next pass.
+   */
+  private async showEnding(job: JobState): Promise<void> {
+    const events = this.deps.log.eventsFor(job.job_id);
+    const readyLabel = this.deps.config.current.sources[0]?.ready_label ?? "factory:ready";
+    let cause = events.at(-1)?.id ?? null;
+    for (const write of endingWrites(events, readyLabel)) {
+      let refused: string | undefined;
+      try {
+        await this.endingWrite(job, write);
+      } catch (err) {
+        if (err instanceof GitHubUnavailable) return;
+        if (!(err instanceof GitHubError)) throw err;
+        refused = err.message;
+      }
+      const data = { ...("number" in write && { number: write.number }), ...("label" in write && { label: write.label }), ...(refused && { refused }) };
+      cause = (await this.record({ ...jobEvent(job, cause), type: RECORDED_AS[write.kind], data })).id;
+    }
+  }
+
+  private endingWrite(job: JobState, write: EndingWrite): Promise<void> {
+    const { pulls } = this.deps;
+    switch (write.kind) {
+      case "close-pr":
+        return pulls.close(job.repo, write.number);
+      case "draft-pr":
+        return pulls.toDraft(job.repo, write.number);
+      case "remove-ready-label":
+        return pulls.removeLabel(job.repo, job.issue, write.label);
+      case "reopen-issue":
+        return pulls.reopenIssue(job.repo, job.issue);
+    }
   }
 
   private now(): Date {
@@ -592,11 +639,15 @@ export class Orchestrator {
     const command = answered.data.command;
     // The Factory had given up: the Job fails, and its draft PR, branches and Working copy stay for 7 days (ADR 0010).
     if (command === "cancel" && GIVE_UP_CAUSES.has(String(request?.data.cause))) {
-      return instant(() => this.record({ ...envelope, type: "job-failed", data: { reason: String(request!.data.text ?? request!.data.cause) } }));
+      return instant(async () => {
+        await this.record({ ...envelope, type: "job-failed", data: { reason: String(request!.data.text ?? request!.data.cause) } });
+        await this.showEnding(job);
+      });
     }
     if (command === "cancel") {
       return instant(async () => {
         await this.record({ ...envelope, type: "job-cancelled", data: { reason: `cancelled by ${answered.actor}` } });
+        await this.showEnding(job);
         await this.cleanUp(job);
       });
     }

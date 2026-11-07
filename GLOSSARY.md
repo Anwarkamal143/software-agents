@@ -95,7 +95,7 @@ The single authoritative home of the Event log. Every transition is decided agai
 _Avoid_: database, backend (alone), source of truth
 
 **Mirror**:
-A copy of Job state written out for visibility, such as GitHub labels, status comments and what a Job's ending shows (its PR closed or turned back into a draft, a reverted issue reopened). It only shows what the Orchestrator already decided: it never decides anything, and nothing is decided from it.
+A read-only copy of Job state kept for visibility, such as GitHub labels and status comments. It never decides anything.
 _Avoid_: replica, sync, projection (for GitHub)
 
 **Human request**:
