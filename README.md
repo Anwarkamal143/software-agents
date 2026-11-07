@@ -9,8 +9,8 @@ Needs Node 22.13 or later. On Linux the Sandbox needs `bubblewrap` and `socat`.
 ```sh
 npm i -g software-factory
 factory init                      # Factory home, your own GitHub App, a starter factory.yaml, pinned gitleaks
-factory repo add <owner/repo>     # propose Check Stages and a network allowlist, run the Baseline check
-factory secret set <owner/repo> DATABASE_URL < value.txt   # a check secret, read from stdin into the keychain
+factory repo add <owner/repo> --secret DATABASE_URL   # propose Check Stages and a network allowlist, ask for its check secrets, run the Baseline check
+factory secret set <owner/repo> DATABASE_URL < value.txt   # set or change a check secret later, from stdin
 factory doctor                    # the self-checks every start runs; --baseline adds each repo's Baseline check
 factory run
 ```

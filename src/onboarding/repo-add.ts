@@ -5,6 +5,7 @@ import { homePaths } from "../home.js";
 import { SOURCE_CURSOR } from "../orchestrator/orchestrator.js";
 import type { Clones } from "../repos/clones.js";
 import { seedRepoCursor } from "../source/github.js";
+import { checkSecretKey, type WritableSecretStore } from "../secrets/keychain.js";
 import type { CheckRunner } from "../stages/check-runner.js";
 import type { JobStore } from "../store/job-store.js";
 import { baselineCheck } from "./baseline.js";
@@ -24,6 +25,10 @@ export interface RepoAddDeps {
   openStore: () => JobStore;
   /** Shows the proposal (YAML) and asks. Asked again, with the problems, if an edit doesn't pass. */
   confirm: (proposal: string, problems: string[]) => Promise<Confirmation>;
+  /** Where the repo's check secrets go, once its Baseline check passes. */
+  secrets: WritableSecretStore;
+  /** Asks you for one check secret's value without showing it; null when there's no terminal to type it in. */
+  askSecret: (name: string) => Promise<string | null>;
   out: (s: string) => void;
   now?: () => Date;
 }
@@ -32,6 +37,8 @@ export interface RepoAddOptions {
   skipBaseline?: boolean;
   /** Also pick up issues already labelled ready, each still checked in the timeline for an allowed person. */
   backfill?: boolean;
+  /** Check secrets the repo's Check Stages need, by name: proposed in its entry, asked for before the Baseline check. */
+  secrets?: string[];
 }
 
 export type RepoAddOutcome = "added" | "already-added" | "declined" | "refused";
@@ -55,6 +62,7 @@ export async function repoAdd(name: string, options: RepoAddOptions, deps: RepoA
   if (loaded.config.repos.some((r) => r.name === name)) {
     const created = await ensureLabels(deps.github, name, readyLabel);
     deps.out(`${name} is already in factory.yaml; nothing to change there.${created.length ? ` Created missing labels: ${created.join(", ")}.` : ""}\n`);
+    if (options.secrets?.length) deps.out(`Set its check secrets with \`factory secret set ${name} <NAME>\`.\n`);
     return "already-added";
   }
 
@@ -62,7 +70,7 @@ export async function repoAdd(name: string, options: RepoAddOptions, deps: RepoA
   const head = await deps.clones.defaultHead(name);
   const files = new Map<string, string | null>();
   for (const file of ["package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "go.mod", "Cargo.toml"]) files.set(file, await deps.clones.readFile(name, head, file));
-  let entry: RepoEntry = repoEntry(name, proposeRepo((p) => files.get(p) ?? null));
+  let entry: RepoEntry = repoEntry(name, proposeRepo((p) => files.get(p) ?? null), options.secrets);
 
   // Nothing is written until you confirm, and the confirmed entry must pass the config check.
   let problems: string[] = [];
@@ -89,10 +97,18 @@ export async function repoAdd(name: string, options: RepoAddOptions, deps: RepoA
     problems = added.problems;
   }
 
+  // Held in memory for the Baseline check; into the keychain only once the repo is accepted.
+  const secrets: Record<string, string> = {};
+  for (const secret of entry.repo.check_secrets ?? []) {
+    const value = await deps.askSecret(secret);
+    if (!value) throw new Error(`Check secret ${secret} needs its value typed in a terminal. Nothing written. Run \`factory repo add ${name}\` in a terminal, or add it with --skip-baseline and then \`factory secret set ${name} ${secret}\`.`);
+    secrets[secret] = value;
+  }
+
   if (options.skipBaseline) deps.out("Skipping the Baseline check (--skip-baseline).\n");
   else {
     deps.out(`Running the Baseline check on ${name}'s default branch (${head.slice(0, 7)})…\n`);
-    const baseline = await baselineCheck(deps.clones, deps.checks, { repo: name, checks: entry.repo.commands ?? {}, network: entry.repo.network ?? [] });
+    const baseline = await baselineCheck(deps.clones, deps.checks, { repo: name, checks: entry.repo.commands ?? {}, network: entry.repo.network ?? [], secrets });
     if (!baseline.passed) {
       deps.out(
         `Refused: the Baseline check failed. Check Stage "${baseline.check}": \`${baseline.command}\` exited ${baseline.exit_code}.\n` +
@@ -103,6 +119,8 @@ export async function repoAdd(name: string, options: RepoAddOptions, deps: RepoA
     deps.out("The Baseline check passed.\n");
   }
 
+  for (const [secret, value] of Object.entries(secrets)) await deps.secrets.set(checkSecretKey(name, secret), value);
+  if (Object.keys(secrets).length) deps.out(`Stored ${Object.keys(secrets).join(", ")} in the keychain for ${name}.\n`);
   const created = await ensureLabels(deps.github, name, readyLabel);
   if (created.length) deps.out(`Created labels: ${created.join(", ")}.\n`);
   const store = deps.openStore();

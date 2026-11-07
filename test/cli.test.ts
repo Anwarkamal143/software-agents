@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { runCli } from "../src/cli/run.js";
 import { openSqliteJobStore } from "../src/store/sqlite-job-store.js";
@@ -12,6 +12,7 @@ import { FakeGitHub } from "./fakes/github.js";
 import { unavailableSandbox } from "./fakes/sandbox.js";
 import { FakeSecrets } from "./fakes/secrets.js";
 import { makeRemote } from "./helpers/git.js";
+import { nodeRemote } from "./fixtures/node-repo.js";
 
 async function cli(home: string, ...argv: string[]) {
   let stdout = "";
@@ -189,6 +190,24 @@ describe("factory onboarding commands", () => {
     expect(r.stdout).toMatch(/^FAIL {2}config: No config at .*\n {6}fix: Run `factory init`\.\n/m);
     expect(r.stdout).toMatch(/^FAIL {2}agent-sandbox: bubblewrap is not installed\n {6}fix: /m);
     expect(r.stdout).toMatch(/failed\.\n$/);
+  });
+
+  test("repo add --secret asks for each value; with no terminal to type it in, it stops and writes nothing", async () => {
+    const home = tmpHome();
+    writeFileSync(join(home, "factory.yaml"), starterConfig("alice"));
+    const secrets = new FakeSecrets({ GITHUB_TOKEN: "ghp_x" });
+    const asked: string[] = [];
+    const r = await run(home, ["repo", "add", "acme/web-app", "--secret", "DATABASE_URL", "--secret", "STRIPE_KEY", "--yes"], {
+      secrets,
+      fetch: new FakeGitHub().fetch,
+      clones: new Clones(home, { remoteUrl: () => nodeRemote(join(home, "github")) }),
+      askSecret: async (q) => (asked.push(q), asked.length === 1 ? "postgres://x" : null),
+    });
+    expect(asked).toEqual(["Value for check secret DATABASE_URL (not shown): ", "Value for check secret STRIPE_KEY (not shown): "]);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toMatch(/^Check secret STRIPE_KEY needs its value typed in a terminal\. Nothing written\./);
+    expect(await secrets.get("check.acme.web-app.DATABASE_URL")).toBeNull();
+    expect(readFileSync(join(home, "factory.yaml"), "utf8")).toBe(starterConfig("alice"));
   });
 
   test("repo add with no terminal to confirm in asks for --yes", async () => {
