@@ -185,10 +185,13 @@ export class Clones {
     const cwd = wc.trustedClone;
     const base = (await this.git.run(["merge-base", `refs/remotes/origin/${await this.defaultBranchOf(cwd)}`, head], { cwd })).trim();
     const numstat = await this.git.run(["diff", "--numstat", "-z", "--no-renames", base, head], { cwd });
+    const nameStatus = (await this.git.run(["diff", "--name-status", "-z", "--no-renames", base, head], { cwd })).split("\0");
+    const statuses = new Map<string, ChangedFile["status"]>();
+    for (let i = 0; i + 1 < nameStatus.length; i += 2) statuses.set(nameStatus[i + 1]!, nameStatus[i] === "A" ? "added" : nameStatus[i] === "D" ? "deleted" : "modified");
     const files = new Map<string, ChangedFile>();
     for (const entry of numstat.split("\0").filter(Boolean)) {
       const [added, removed, path] = entry.split("\t") as [string, string, string];
-      files.set(path, { path, added: Number(added) || 0, removed: Number(removed) || 0, addedLines: [] });
+      files.set(path, { path, status: statuses.get(path) ?? "modified", added: Number(added) || 0, removed: Number(removed) || 0, addedLines: [] });
     }
     let current: ChangedFile | undefined;
     for (const line of (await this.git.run(["diff", "-U0", "--no-renames", "--no-color", "--no-ext-diff", base, head], { cwd })).split("\n")) {

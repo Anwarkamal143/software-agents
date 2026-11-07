@@ -19,7 +19,7 @@ const good = (over: Partial<MergeGateFacts> = {}): MergeGateFacts => ({
   ...over,
 });
 
-const file = (path: string): ChangedFile => ({ path, added: 1, removed: 0, addedLines: ["x"] });
+const file = (path: string): ChangedFile => ({ path, status: "modified", added: 1, removed: 0, addedLines: ["x"] });
 const codes = (facts: MergeGateFacts) => evaluateMergeGate(facts).failures.map((f) => f.code);
 
 describe("evaluateMergeGate: the fixed core", () => {
@@ -197,7 +197,7 @@ describe("decideMerge: Autonomy level × gate outcome", () => {
     ["migrations", file("db/migrations/0042.sql")],
     ["secrets", file(".env.local")],
     ["ci-config", file(".github/workflows/deploy.yml")],
-    ["size-cap", { path: "src/big.ts", added: 401, removed: 0, addedLines: [] }],
+    ["size-cap", { ...file("src/big.ts"), added: 401, addedLines: [] }],
   ])("Risk rule %s sends a Job to waiting (approval) in auto", (rule, changed) => {
     const risks = matchRiskRules(BUILT_IN_RISK_RULES, { labels: [], files: [changed], sizeCap: 400 });
     const d = decideMerge({ autonomy: "auto", gate: gate.passes, risks, approved: false });
