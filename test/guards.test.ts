@@ -6,9 +6,11 @@ import { tmpHome } from "./helpers/tmp.js";
 
 function context(): GuardContext {
   const root = tmpHome();
-  const workingCopy = join(root, "work", "job-1", "a1", "repo");
+  // Where the Factory puts it: inside the Factory home.
+  const factoryHome = join(root, "factory-home");
+  const workingCopy = join(factoryHome, "work", "job-1", "a1", "repo");
   mkdirSync(workingCopy, { recursive: true });
-  return { workingCopy, factoryHome: join(root, "factory-home"), userHome: join(root, "me") };
+  return { workingCopy, factoryHome, userHome: join(root, "me") };
 }
 
 const guard = (ctx: GuardContext, tool: string, input: Record<string, unknown>) => checkToolCall(tool, input, ctx)?.guard ?? null;
@@ -81,6 +83,16 @@ describe("Guards", () => {
     const ctx = context();
     for (const command of ["npm test", "git status", "git commit -m 'Fix #7'", "rm -rf node_modules dist", "rm -rf ./build", "ls -la src", "npx tsc --noEmit", "git log --oneline -5"]) {
       expect(checkToolCall("Bash", { command }, ctx), command).toBeNull();
+    }
+  });
+
+  test("a command may name the Working copy by its full path, but nothing else in the Factory home", () => {
+    const ctx = context();
+    for (const command of [`git -C ${ctx.workingCopy} status`, `cd ${ctx.workingCopy} && node --test`, `ls "${ctx.workingCopy}/src"`]) {
+      expect(checkToolCall("Bash", { command }, ctx), command).toBeNull();
+    }
+    for (const command of [`cat ${ctx.factoryHome}/factory.yaml`, `cat ${ctx.workingCopy}/../../../../factory.yaml`, `cat "${ctx.workingCopy}/./src/../../../../../factory.yaml"`, `ls ${ctx.workingCopy}-other`, `git -C ${ctx.workingCopy} status; cat ${ctx.factoryHome}/jobs.db`]) {
+      expect(guard(ctx, "Bash", { command }), command).toBe("secret-file");
     }
   });
 

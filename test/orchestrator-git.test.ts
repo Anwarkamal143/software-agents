@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { randomBytes } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { building, pass, ScriptedAgent } from "./fakes/agent.js";
 import { approved } from "./fakes/source.js";
@@ -46,6 +46,10 @@ describe("Orchestrator with Trusted clones and Working copies", () => {
     expect(verifyPassed.data.head).toBe(pushed.data.head);
     expect(f.agent.requests[1]!.workingCopy.dir).toBe(join(f.home, "work", f.onlyJob().job_id, "a1", "repo"));
     expect(f.agent.requests[1]!.workingCopy.env.HOME).toBe(join(f.home, "work", f.onlyJob().job_id, "a1", "home"));
+    // The objects the Working copy's git borrows (--reference), so its commands may read them.
+    const { dir, objects } = f.agent.requests[1]!.workingCopy;
+    expect(objects).toBe(join(f.home, "repos", "acme", "web-app.git", "objects"));
+    expect(realpathSync(readFileSync(join(dir, ".git", "objects", "info", "alternates"), "utf8").trim())).toBe(realpathSync(objects));
   });
 
   test("a failed Pre-push check pushes nothing and sends the Job to waiting", async () => {

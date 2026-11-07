@@ -36,14 +36,17 @@ function adapter(home: string): ClaudeAdapter {
 
 /** A Working copy of the cart repo, with an Attempt's own HOME, caches and temp folder. */
 function workingCopy() {
-  const root = tmpHome();
-  const dir = join(root, "repo");
-  mkdirSync(dir);
+  // Inside the Factory home, where the Factory puts a Working copy (ADR 0008).
+  const home = join(tmpHome(), "factory-home");
+  const attempt = join(home, "work", "job-eval", "a1");
+  const dir = join(attempt, "repo");
+  mkdirSync(dir, { recursive: true });
   const base = cartRepo(dir);
   agentGit(dir, "checkout", "-q", "-b", "factory/1");
-  const env = { HOME: join(root, "home"), XDG_CONFIG_HOME: join(root, "home", ".config"), XDG_CACHE_HOME: join(root, "cache"), npm_config_cache: join(root, "cache", "npm"), TMPDIR: join(root, "tmp") };
+  const env = { HOME: join(attempt, "home"), XDG_CONFIG_HOME: join(attempt, "home", ".config"), XDG_CACHE_HOME: join(attempt, "cache"), npm_config_cache: join(attempt, "cache", "npm"), TMPDIR: join(attempt, "tmp") };
   for (const d of Object.values(env)) mkdirSync(d, { recursive: true });
-  return { root, dir, base, env, home: join(root, "factory-home") };
+  // A plain repo, not a --reference clone, so there are no borrowed objects; the field names where they'd be.
+  return { dir, base, env, home, objects: join(home, "repos", "acme", "cart.git", "objects") };
 }
 
 /** One Stage run on `issue`, straight through the adapter, as the Orchestrator would brief it. */
@@ -68,7 +71,7 @@ async function runStage(stage: keyof typeof STAGES, issue: RecordedIssue, wc: Re
     brief,
     renderedBrief: renderBrief(brief),
     model: MODEL,
-    workingCopy: { dir: wc.dir, env: wc.env },
+    workingCopy: { dir: wc.dir, env: wc.env, objects: wc.objects },
     network: [],
     budget: { usd: 2, turns: 40, minutes: 10 },
     resultSchema: STAGE_RESULT_SCHEMA,

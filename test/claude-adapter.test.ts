@@ -68,7 +68,7 @@ function setup(opts: { signIn?: "api-key" | "subscription"; secrets?: Record<str
     brief: { stage: "build", instructions: "factory:build", tools: "write-branch" } as AgentRunRequest["brief"],
     renderedBrief: "Build the thing.",
     model: "claude-opus-5-5",
-    workingCopy: { dir: join(wc, "repo"), env },
+    workingCopy: { dir: join(wc, "repo"), env, objects: join(home, "repos", "acme", "app.git", "objects") },
     network: ["registry.npmjs.org"],
     budget: { usd: 5, turns: 100, minutes: 30 },
     resultSchema: STAGE_RESULT_SCHEMA,
@@ -148,6 +148,18 @@ describe("Claude adapter: session options", () => {
     expect(sandbox.network).toEqual({ allowedDomains: ["registry.npmjs.org"], strictAllowlist: true });
     expect(sandbox.filesystem?.allowWrite).toEqual([s.request.workingCopy.dir, s.request.workingCopy.env.TMPDIR, s.request.workingCopy.env.XDG_CACHE_HOME]);
     expect(sandbox.filesystem?.denyRead).toEqual(expect.arrayContaining([s.home, "/Users/me/.ssh", "/Users/me/.claude"]));
+  });
+
+  test("commands can read the Attempt's own folders and the Trusted clone's objects, though the rest of the Factory home stays hidden", async () => {
+    const s = setup();
+    const { query, calls } = fakeQuery([init(), success(RESULT)]);
+    await s.make(query).run(s.request);
+
+    const { dir, env, objects } = s.request.workingCopy;
+    const filesystem = calls[0]!.options.sandbox!.filesystem!;
+    expect(filesystem.allowRead).toEqual([dir, env.HOME, env.XDG_CACHE_HOME, env.TMPDIR, objects]);
+    expect(filesystem.denyRead).toEqual(expect.arrayContaining([s.home, `${dir}/**/.env*`]));
+    expect(filesystem.allowWrite).not.toContain(objects);
   });
 
   test("a read-only Stage can't write the Working copy and gets no network", async () => {
