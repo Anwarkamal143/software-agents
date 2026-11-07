@@ -34,10 +34,10 @@ export class GitHubError extends Error {
  * GitHub refused a call in a way waiting won't fix: a permission the Factory's App lacks (403), or a
  * repo it can't see (404). A Factory fault, not an outage (ADR 0010).
  */
-export class GitHubRefused extends GitHubError {
+export class GitHubRefused extends Error {
   override name = "GitHubRefused";
   constructor(
-    status: number,
+    readonly status: number,
     /** The call refused, as "METHOD /path". */
     readonly call: string,
     /** The permissions GitHub said the call needs (`x-accepted-github-permissions`), if it said. */
@@ -45,7 +45,7 @@ export class GitHubRefused extends GitHubError {
     /** What GitHub said about it, or what its status means when it said nothing. */
     readonly detail: string | null,
   ) {
-    super(status, `${call} → ${status}${detail ? `: ${detail}` : ""}`);
+    super(`${call} → ${status}${detail ? `: ${detail}` : ""}`);
   }
 }
 

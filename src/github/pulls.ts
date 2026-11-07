@@ -157,7 +157,7 @@ export class GitHubPullRequests implements PullRequests {
   /** One REST call whose answer is needed: a 404 means the repo can't be seen, a refusal waiting won't fix. */
   private async call<T>(method: string, path: string, repo: string, body?: unknown): Promise<T> {
     const res = await this.client.request<T>(method, path, { repo, ...(body !== undefined && { body }) });
-    if (res.status === 404) throw new GitHubRefused(404, `${method} ${path}`, null, `GitHub can't find it, or won't show it to the Factory`);
+    if (res.status === 404) throw new GitHubRefused(404, `${method} ${path}`, null, `not found, or not shown to the Factory`);
     if (res.body === null) throw new GitHubError(res.status, `${method} ${path} → ${res.status}`);
     return res.body;
   }

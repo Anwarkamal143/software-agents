@@ -9,6 +9,13 @@ import { factoryAt, fakeFactory } from "./helpers/factory.js";
 import type { JobStore } from "../src/store/job-store.js";
 import { JobStoreUnwritable } from "../src/orchestrator/orchestrator.js";
 import { GitHubRefused, GitHubUnavailable } from "../src/github/client.js";
+import { runCli } from "../src/cli/run.js";
+
+async function cli(home: string, ...argv: string[]) {
+  let stdout = "";
+  const code = await runCli(argv, { home, stdout: { write: (s: string) => void (stdout += s) }, stderr: { write: () => undefined } });
+  return { code, stdout };
+}
 import { agentGit, commitAll, writeIn } from "./helpers/git.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -358,6 +365,20 @@ describe("PRs and merging", () => {
     const seen = f.log.store.read().length;
     await f.orchestrator.runUntilIdle();
     expect(f.log.store.read()).toHaveLength(seen);
+
+    // `factory status` says what was refused and what to change, and why the Job is parked.
+    const { stdout } = await cli(f.home, "status");
+    const lines = stdout.split("\n");
+    expect(lines[0]).toContain("The Factory is paused (github-refused): GitHub refused GET /repos/acme/web-app/commits/abc123/status");
+    expect(lines[0]).toContain("statuses=read");
+    expect(lines[0]).toContain("restart the Factory");
+    expect(lines.find((l) => l.startsWith(job.job_id))).toContain("factory-paused: github-refused");
+
+    // Restarted before it's fixed: paused again, but the Job doesn't say it twice.
+    await f.orchestrator.start();
+    await f.orchestrator.runUntilIdle();
+    expect(f.log.factoryPause()).toMatchObject({ data: { reason: "github-refused" } });
+    expect(f.log.eventsFor(job.job_id).filter((e) => e.data.outcome === "github-refused")).toHaveLength(1);
 
     f.pulls.refuse = null;
     await f.orchestrator.start();

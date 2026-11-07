@@ -31,6 +31,7 @@ import { parseStageResult, STAGE_RESULT_SCHEMA, type StageResult } from "../stag
 import type { ArtifactStore } from "../store/artifact-store.js";
 import { attemptProgress, type AttemptProgress, type PendingAnswer } from "./progress.js";
 import { GIVE_UP_CAUSES, isLive, STAGE_RUN_ENDINGS } from "../jobs/endings.js";
+import { GITHUB_REFUSED, RECHECKED_ON_START } from "../jobs/faults.js";
 import { afterRunError, retryRun } from "./retries.js";
 import { endingWrites, RECORDED_AS, type EndingWrite } from "./ending-writes.js";
 import { MAX_GUARD_DENIALS, SessionWatch, type DenialTally, type RunEnvelope } from "./session-watch.js";
@@ -559,7 +560,7 @@ export class Orchestrator {
     } catch (err) {
       // Down: try again next pass. Refused outright: say so and end the watch, rather than ask GitHub every minute.
       if (err instanceof GitHubUnavailable) return;
-      if (!(err instanceof GitHubError)) throw err;
+      if (!(err instanceof GitHubError || err instanceof GitHubRefused)) throw err;
       return void (await this.record(red(` GitHub refused the revert PR: ${err.message}`)));
     }
     if (mergeWith) {
@@ -602,7 +603,7 @@ export class Orchestrator {
         await this.endingWrite(job, write);
       } catch (err) {
         if (err instanceof GitHubUnavailable) return;
-        if (!(err instanceof GitHubError)) throw err;
+        if (!(err instanceof GitHubError || err instanceof GitHubRefused)) throw err;
         refused = err.message;
       }
       const data = { ...("number" in write && { number: write.number }), ...("label" in write && { label: write.label }), ...(refused && { refused }) };
@@ -1101,7 +1102,11 @@ export class Orchestrator {
   /** GitHub refused a call the Merge gate needs: the Factory pauses, and the Job says why. */
   private async refusedAtMergeGate(ctx: StepContext, err: GitHubRefused, caused_by: string | null): Promise<boolean> {
     const paused = await this.gitHubRefused(err, ctx.job.repo, caused_by);
-    await this.record({ ...jobEvent(ctx.job, paused.id), type: "checkpoint-evaluated", data: { checkpoint: "merge-gate", outcome: GITHUB_REFUSED, why: describeRefusal(err, ctx.job.repo) } });
+    // Said once: a restart before it's fixed pauses again, but the Job has said it already.
+    const why = describeRefusal(err, ctx.job.repo);
+    const said = ctx.events.findLast((e) => e.type === "checkpoint-evaluated" && e.data.checkpoint === "merge-gate");
+    if (said?.data.outcome === GITHUB_REFUSED && said.data.why === why) return true;
+    await this.record({ ...jobEvent(ctx.job, paused.id), type: "checkpoint-evaluated", data: { checkpoint: "merge-gate", outcome: GITHUB_REFUSED, why } });
     return true;
   }
 
@@ -1273,23 +1278,14 @@ export class Orchestrator {
 /** The `factory-paused` reason while either Sandbox can't confine commands. */
 const SANDBOX_UNAVAILABLE = "sandbox-unavailable" as const;
 
-/** The `factory-paused` reason once GitHub refuses a call in a way waiting won't fix: a missing permission, a repo it can't see. */
-const GITHUB_REFUSED = "github-refused" as const;
-
 /** What GitHub refused, and what to change. */
 function describeRefusal(err: GitHubRefused, repo: string): string {
-  const refused = `GitHub refused ${err.call} (${err.status}${err.detail ? `: ${err.detail}` : ""}).`;
-  if (err.status === 404) return `${refused} The Factory's GitHub App may not be installed on ${repo}, or can't see it: install it there.`;
+  const refused = `GitHub refused ${err.message}.`;
+  if (err.status === 404) return `${refused} If the Factory's GitHub App isn't installed on ${repo}, or can't see it, install it there.`;
   if (err.permissions) return `${refused} It needs the permission ${err.permissions}: grant it to the Factory's GitHub App and accept it on the installation.`;
   return `${refused} The Factory's GitHub App lacks a permission this call needs: check its permissions and the installation's.`;
 }
 
-/**
- * Factory faults a start lifts: whatever hit one checks again before anything is spent (a check
- * secret before its commands run, the sign-in before the model's first turn, the Merge gate's
- * GitHub calls), and pauses again if it's still wrong.
- */
-export const RECHECKED_ON_START = ["check-secret-missing", "sign-in-mismatch", GITHUB_REFUSED] as const;
 
 /** How often a pause for the Sandbox is looked at again. */
 const SANDBOX_RECHECK_MS = 5 * 60_000;
@@ -1342,10 +1338,10 @@ function rejectTarget(stages: ResolvedStage[]): string | null {
  * GitHub couldn't be reached, or turned one call down: tried again next pass, never a reason to stop
  * the Factory. A GitHubRefused isn't one of these: waiting won't fix it.
  */
-const gitHubFailed = (err: unknown) => err instanceof GitHubUnavailable || (err instanceof GitHubError && !(err instanceof GitHubRefused));
+const gitHubFailed = (err: unknown) => err instanceof GitHubUnavailable || err instanceof GitHubError;
 
 /** Any answer from GitHub short of success, refusals included: where nothing waits on it, it never stops a step. */
-const gitHubAnswered = (err: unknown): err is GitHubUnavailable | GitHubError => err instanceof GitHubUnavailable || err instanceof GitHubError;
+const gitHubAnswered = (err: unknown): err is GitHubUnavailable | GitHubError | GitHubRefused => gitHubFailed(err) || err instanceof GitHubRefused;
 
 /** GitHub caps PR titles at 256 characters. */
 const MAX_PR_TITLE = 256;

@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { GitHubError, type GitHubClient } from "../github/client.js";
 import { FACTORY_MARKER } from "../humans/commands.js";
+import { GITHUB_REFUSED, RESTART_TO_LIFT } from "../jobs/faults.js";
 import { renderAlreadyAnswered, renderHumanRequest, renderNotWaiting, renderReminder } from "../humans/request.js";
 import type { EventLog } from "../jobs/event-log.js";
 import type { JobState } from "../jobs/projection.js";
@@ -296,7 +297,8 @@ export class GitHubMirror implements Mirror {
 /**
  * The comments an event asks for besides the status: the Human request itself, replies to Reply
  * commands sent on GitHub that came too late or while the Job wasn't waiting, the three-day
- * reminder, the one-line link on a PR the Factory opened, and what GitHub refused at the Merge gate. Replies from the CLI get none.
+ * reminder, the one-line link on a PR the Factory opened, and what GitHub refused at the Merge
+ * gate. Replies from the CLI get none.
  */
 function posts({ event, job }: MirrorUpdate): Post[] {
   const d = event.data;
@@ -309,8 +311,8 @@ function posts({ event, job }: MirrorUpdate): Post[] {
       return typeof d.number === "number" ? [{ part: "pr-link", number: d.number, body: renderPrLink(job) }] : [];
     case "checkpoint-evaluated":
       // A Factory fault holding the Job: what GitHub refused and what to change (ADR 0010).
-      if (d.outcome !== "github-refused" || typeof d.why !== "string") return [];
-      return [{ part: "fault", number: job.issue, body: `${FACTORY_MARKER} The Factory is paused: ${cleanAgentText(d.why, 600)} Once it's fixed, restart the Factory.` }];
+      if (d.outcome !== GITHUB_REFUSED || typeof d.why !== "string") return [];
+      return [{ part: "fault", number: job.issue, body: `${FACTORY_MARKER} The Factory is paused: ${cleanAgentText(d.why, 600)} ${RESTART_TO_LIFT}` }];
     case "reply-ignored":
       if (d.channel !== "github") return [];
       if (d.why === "already-answered") return [{ part: "reply", number: job.issue, body: renderAlreadyAnswered(event) }];
