@@ -2,6 +2,8 @@
 
 export type Autonomy = "off" | "trial" | "auto";
 export type ToolProfile = "read-only" | "write-branch";
+/** How the Factory merges a PR: GitHub's three ways. */
+export type MergeMethod = "squash" | "merge" | "rebase";
 
 export interface RiskRule {
   name: string;
@@ -80,6 +82,8 @@ export interface TargetRepo {
   /** Keychain names of check secrets, set with `factory secret set`. Each Check Stage gets them as env vars of the same name. */
   check_secrets?: string[];
   max_running?: number;
+  /** How the Factory merges this repo's PRs. Default squash. */
+  merge_method?: MergeMethod;
   policies?: OwnerPolicyPatch & { budgets?: PolicyPatch["budgets"] };
   /** A repo may change only `model` and `instructions` of a library Stage. */
   stage_overrides?: Record<string, { model?: string; instructions?: string }>;

@@ -5,19 +5,15 @@ import { approved, comment } from "./fakes/source.js";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { fixture } from "./helpers/config.js";
-import { fakeFactory } from "./helpers/factory.js";
+import { factoryAt, fakeFactory } from "./helpers/factory.js";
+import type { JobStore } from "../src/store/job-store.js";
+import { JobStoreUnwritable } from "../src/orchestrator/orchestrator.js";
 import { agentGit, commitAll, writeIn } from "./helpers/git.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 
-/**
- * The e2e config at an Autonomy level. Its verify command names built.txt, which the Merge gate
- * reads as the change editing its own checks; through $PWD it no longer names the file.
- */
-const withAutonomy = (autonomy: "off" | "trial" | "auto") =>
-  fixture("e2e.yaml")
-    .replace("  bounce_cap: 3", `  bounce_cap: 3\n  autonomy: ${autonomy}`)
-    .replace(`verify: ["test -f built.txt"]`, `verify: ['test -f "$PWD/built.txt"']`);
+/** The e2e config at an Autonomy level. */
+const withAutonomy = (autonomy: "off" | "trial" | "auto") => fixture("e2e.yaml").replace("  bounce_cap: 3", `  bounce_cap: 3\n  autonomy: ${autonomy}`);
 const remoteHas = (remote: string, ref: string) => {
   try {
     agentGit(remote, "rev-parse", "--verify", "-q", ref);
@@ -117,6 +113,11 @@ describe("PRs and merging", () => {
     const rebased = events.find((e) => e.type === "rebased")!;
     const firstMerge = f.log.eventsFor(first!).find((e) => e.type === "pr-merged")!;
     expect(rebased.data).toMatchObject({ base: firstMerge.data.sha, before: events.findLast((e) => e.type === "branch-pushed")?.data.head });
+    // What the gate decided was to rebase first: no merge happened at the old head.
+    expect(events[events.indexOf(rebased) - 1]).toMatchObject({
+      type: "checkpoint-evaluated",
+      data: { checkpoint: "merge-gate", outcome: "rebase", why: `the default branch moved to ${String(firstMerge.data.sha).slice(0, 12)}: rebasing, then the Check Stages run again` },
+    });
     const after = events.slice(events.indexOf(rebased) + 1);
     expect(after.map((e) => e.type)).toEqual([
       "stage-started", "evidence-recorded", "stage-passed", // verify, again, on the rebased head
@@ -149,6 +150,8 @@ describe("PRs and merging", () => {
     });
     expect(String((bounced.data.findings as { message: string }[])[0]!.message)).toContain(`Merge ${base} into the branch`);
     expect(f.log.eventsFor(conflicted!.job_id).some((e) => e.type === "rebased")).toBe(false);
+    const conflictEvents = f.log.eventsFor(conflicted!.job_id);
+    expect(conflictEvents[conflictEvents.indexOf(conflictEvents.find((e) => e.id === bounced.id)!) - 1]).toMatchObject({ type: "checkpoint-evaluated", data: { outcome: "rebase-conflict" } });
     // Build runs again with the conflict in its brief.
     const rebuild = f.agent.requests.filter((r) => r.brief.stage === "build" && r.job_id === conflicted!.job_id).at(-1)!;
     expect(rebuild.brief.earlier.at(-1)).toMatchObject({ stage: "merge-gate", verdict: "fail", findings: [{ root_cause: "rebase-conflict:built.txt" }] });
@@ -199,7 +202,7 @@ describe("PRs and merging", () => {
       await f.orchestrator.runUntilIdle();
 
       const events = f.log.eventsFor(job.job_id);
-      const revert = f.pulls.of("revert-101")!;
+      const revert = f.pulls.of("factory/7-revert-101")!;
       expect(events.slice(-2).map((e) => [e.type, e.data])).toEqual([
         ["checkpoint-evaluated", { checkpoint: "after-merge", outcome: "red", why: `CI on the default branch went red at ${sha.slice(0, 12)} after #101 merged.` }],
         ["reverted", { revert_pr: revert.number, merged: true, why: `CI on the default branch went red at ${sha.slice(0, 12)} after #101 merged.` }],
@@ -212,7 +215,8 @@ describe("PRs and merging", () => {
       f.source.push({ kind: "reopened", repo: "acme/web-app", issue: 7, by: "alice" });
       await f.orchestrator.runUntilIdle();
       expect(f.log.jobs()).toHaveLength(1);
-      expect(f.pulls.calls.filter((c) => c.startsWith("revert"))).toHaveLength(1);
+      expect(f.pulls.calls.filter((c) => c.startsWith("open factory/7-revert"))).toHaveLength(1);
+      expect(remoteHas(f.remote, "refs/heads/factory/7-revert-101")).toBe(false);
     });
 
     test("after an /approve'd merge in trial, a red run opens the revert PR for you to merge", async () => {
@@ -222,7 +226,7 @@ describe("PRs and merging", () => {
       await f.orchestrator.runUntilIdle();
 
       expect(f.log.eventsFor(job.job_id).at(-1)).toMatchObject({ type: "reverted", data: { merged: false } });
-      expect(f.pulls.of("revert-101")).toMatchObject({ state: "open" });
+      expect(f.pulls.of("factory/7-revert-101")).toMatchObject({ state: "open", draft: false });
       expect(agentGit(f.remote, "show", "main:built.txt")).toMatch(/^build/);
     });
 
@@ -300,12 +304,91 @@ describe("PRs and merging", () => {
     await f.orchestrator.runUntilIdle();
     const job_id = f.onlyJob().job_id;
     f.pulls.checksOf.set(f.log.eventsFor(job_id).findLast((e) => e.type === "pr-merged")!.data.sha as string, "red");
-    f.pulls.refuseReverts = true;
+    f.pulls.refuseOpens = true;
 
     await f.orchestrator.runUntilIdle();
     await f.orchestrator.runUntilIdle();
 
-    expect(f.pulls.calls.filter((c) => c.startsWith("revert"))).toHaveLength(1);
+    expect(f.pulls.calls.filter((c) => c.startsWith("open factory/7-revert"))).toHaveLength(1);
     expect(f.log.eventsFor(job_id).at(-1)).toMatchObject({ type: "checkpoint-evaluated", data: { checkpoint: "after-merge", outcome: "red", why: expect.stringContaining("GitHub refused the revert PR") } });
+  });
+
+  test("a merge the Factory made but died before recording is recorded as its own after a restart", async () => {
+    let failMerged = true;
+    const wrapStore = (store: JobStore): JobStore => ({
+      ...store,
+      append: (event) => {
+        if (failMerged && event.type === "pr-merged") throw new Error("SQLITE_FULL: database or disk is full");
+        return store.append(event);
+      },
+      get: (id) => store.get(id),
+      read: (from, limit) => store.read(from, limit),
+      follow: (from, o) => store.follow(from, o),
+      transaction: (fn) => store.transaction(fn),
+      cursor: (name) => store.cursor(name),
+      saveCursor: (name, value) => store.saveCursor(name, value),
+      close: () => store.close(),
+    });
+    const f = fakeFactory(new ScriptedAgent({ build: [building] }), withAutonomy("auto"), { wrapStore });
+    f.source.push(approved(7));
+    await expect(f.orchestrator.runUntilIdle()).rejects.toBeInstanceOf(JobStoreUnwritable);
+    expect(f.pulls.of("factory/7")?.state).toBe("merged");
+    failMerged = false;
+
+    const restarted = factoryAt(f.home, f.remote, new ScriptedAgent(), { pulls: f.pulls });
+    await restarted.orchestrator.start();
+    await restarted.orchestrator.runUntilIdle();
+
+    const job = restarted.onlyJob();
+    expect(job.status).toBe("merged");
+    expect(restarted.log.eventsFor(job.job_id).find((e) => e.type === "pr-merged")).toMatchObject({ actor: "orchestrator", data: { number: 101, sha: f.pulls.of("factory/7")!.mergedAs } });
+    expect(f.pulls.calls.filter((c) => c.startsWith("merge"))).toHaveLength(1);
+  });
+
+  test("a revert the Factory made but died before recording is picked up after a restart, not made twice", async () => {
+    let failRed = false;
+    const wrapStore = (store: JobStore): JobStore => ({
+      ...store,
+      append: (event) => {
+        if (failRed && event.type === "checkpoint-evaluated" && event.data?.outcome === "red") throw new Error("SQLITE_FULL: database or disk is full");
+        return store.append(event);
+      },
+      get: (id) => store.get(id),
+      read: (from, limit) => store.read(from, limit),
+      follow: (from, o) => store.follow(from, o),
+      transaction: (fn) => store.transaction(fn),
+      cursor: (name) => store.cursor(name),
+      saveCursor: (name, value) => store.saveCursor(name, value),
+      close: () => store.close(),
+    });
+    const f = fakeFactory(new ScriptedAgent({ build: [building] }), withAutonomy("auto"), { wrapStore });
+    f.source.push(approved(7));
+    await f.orchestrator.runUntilIdle();
+    const job_id = f.onlyJob().job_id;
+    f.pulls.checksOf.set(f.log.eventsFor(job_id).findLast((e) => e.type === "pr-merged")!.data.sha as string, "red");
+    failRed = true;
+    await expect(f.orchestrator.runUntilIdle()).rejects.toBeInstanceOf(JobStoreUnwritable);
+    expect(f.pulls.of("factory/7-revert-101")?.state).toBe("merged");
+    failRed = false;
+
+    const restarted = factoryAt(f.home, f.remote, new ScriptedAgent(), { pulls: f.pulls });
+    await restarted.orchestrator.start();
+    await restarted.orchestrator.runUntilIdle();
+
+    expect(restarted.log.eventsFor(job_id).at(-1)).toMatchObject({ type: "reverted", data: { revert_pr: 102, merged: true } });
+    expect(f.pulls.calls.filter((c) => c.startsWith("open factory/7-revert"))).toHaveLength(1);
+    expect(f.pulls.calls.filter((c) => c === "merge 102")).toHaveLength(1);
+    expect(remoteHas(f.remote, "refs/heads/factory/7-revert-101")).toBe(false);
+  });
+
+  test("a repo's merge_method is how the Factory merges its PRs", async () => {
+    const config = withAutonomy("auto").replace("default_pipeline: feature", "default_pipeline: feature\n    merge_method: rebase");
+    const f = fakeFactory(new ScriptedAgent({ build: [building] }), config);
+    f.source.push(approved(7));
+
+    await f.orchestrator.runUntilIdle();
+
+    expect(f.onlyJob().status).toBe("merged");
+    expect(f.pulls.methods).toEqual(["rebase"]);
   });
 });

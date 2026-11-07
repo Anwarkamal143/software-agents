@@ -44,10 +44,10 @@ describe("GitHubPullRequests", () => {
   test("opens a draft PR from the Job branch, and finds one already open from it", async () => {
     const { pulls, sent } = github({
       [`POST /repos/${REPO}/pulls`]: () => ({ status: 201, body: pull() }),
-      [`GET /repos/${REPO}/pulls?state=open&head=${encodeURIComponent("acme:factory/7")}`]: () => ({ body: [pull()] }),
+      [`GET /repos/${REPO}/pulls?state=all&head=${encodeURIComponent("acme:factory/7")}`]: () => ({ body: [pull()] }),
     });
 
-    expect(await pulls.open(REPO, { branch: "factory/7", base: "main", title: "Add /health", body: "Closes #7." })).toEqual({ number: 12, url: `https://github.com/${REPO}/pull/12` });
+    expect(await pulls.open(REPO, { branch: "factory/7", base: "main", title: "Add /health", body: "Closes #7.", draft: true })).toEqual({ number: 12, url: `https://github.com/${REPO}/pull/12` });
     expect(sent[0]!.body).toEqual({ head: "factory/7", base: "main", title: "Add /health", body: "Closes #7.", draft: true });
     expect(await pulls.find(REPO, "factory/7")).toEqual({ number: 12, url: `https://github.com/${REPO}/pull/12` });
   });
@@ -72,30 +72,27 @@ describe("GitHubPullRequests", () => {
     expect(await pulls.get(REPO, 12)).toEqual({ number: 12, url: `https://github.com/${REPO}/pull/12`, head: SHA, draft: true, state: "open", checks: "green", conflicts: true });
   });
 
-  test("merge squashes only at the given head; a 409 is GitHub refusing a changed head", async () => {
+  test("merge uses the method asked for, only at the given head; a 409 is GitHub refusing a changed head", async () => {
     let answer: { status?: number; body: unknown } = { body: { sha: "merged1", merged: true } };
     const { pulls, sent } = github({ [`PUT /repos/${REPO}/pulls/12/merge`]: () => answer });
 
-    expect(await pulls.merge(REPO, 12, { sha: SHA, title: "Add /health (#12)" })).toEqual({ merged: true, sha: "merged1" });
+    expect(await pulls.merge(REPO, 12, { sha: SHA, title: "Add /health (#12)", method: "squash" })).toEqual({ merged: true, sha: "merged1" });
     expect(sent[0]!.body).toEqual({ sha: SHA, merge_method: "squash", commit_title: "Add /health (#12)" });
 
     answer = { status: 409, body: { message: "Head branch was modified. Review and try the merge again." } };
-    expect(await pulls.merge(REPO, 12, { sha: SHA, title: "t" })).toMatchObject({ merged: false, why: "head-changed" });
+    expect(await pulls.merge(REPO, 12, { sha: SHA, title: "t", method: "rebase" })).toMatchObject({ merged: false, why: "head-changed" });
     answer = { status: 405, body: { message: "Pull Request is not mergeable" } };
-    expect(await pulls.merge(REPO, 12, { sha: SHA, title: "t" })).toMatchObject({ merged: false, why: "not-mergeable", message: expect.stringContaining("not mergeable") });
+    expect(await pulls.merge(REPO, 12, { sha: SHA, title: "t", method: "rebase" })).toMatchObject({ merged: false, why: "not-mergeable", message: expect.stringContaining("not mergeable") });
   });
 
-  test("marking ready and reverting go through GraphQL by the PR's node id", async () => {
+  test("marking ready goes through GraphQL by the PR's node id", async () => {
     const { pulls, sent } = github({
       [`GET /repos/${REPO}/pulls/12`]: () => ({ body: pull() }),
       "GRAPHQL markPullRequestReadyForReview": () => ({ body: { data: { markPullRequestReadyForReview: { pullRequest: { number: 12 } } } } }),
-      "GRAPHQL revertPullRequest": () => ({ body: { data: { revertPullRequest: { revertPullRequest: { number: 13, url: `https://github.com/${REPO}/pull/13` } } } } }),
     });
 
     await pulls.markReady(REPO, 12);
-    expect(await pulls.revert(REPO, 12, { title: "Revert #12", body: "CI went red." })).toEqual({ number: 13, url: `https://github.com/${REPO}/pull/13` });
-    const graphql = sent.filter((r) => r.path === "/graphql").map((r) => r.body.variables);
-    expect(graphql).toEqual([{ id: "PR_node12" }, { id: "PR_node12", title: "Revert #12", body: "CI went red." }]);
+    expect(sent.filter((r) => r.path === "/graphql").map((r) => r.body.variables)).toEqual([{ id: "PR_node12" }]);
   });
 
   test("a GraphQL error is an error, not a quiet success", async () => {

@@ -12,6 +12,8 @@ interface FakePr extends OpenPullRequest {
   state: PullRequest["state"];
   /** The commit a merge left on the base branch. */
   mergedAs?: string;
+  /** The head it was merged at: GitHub keeps reporting it after the branch is deleted. */
+  headAtMerge?: string;
 }
 
 /**
@@ -29,10 +31,12 @@ export class FakePullRequests implements PullRequests {
   /** Runs just before GitHub looks at a merge's head, as someone pushing in between would. */
   beforeMerge: ((pr: FakePr) => void) | null = null;
   readonly calls: string[] = [];
+  /** How each merge was asked for. */
+  readonly methods: string[] = [];
   /** GitHub won't merge, whatever the head: branch protection, say. */
   refuseMerges: string | null = null;
-  /** GitHub refuses to open a revert PR. */
-  refuseReverts = false;
+  /** GitHub refuses to open PRs. */
+  refuseOpens = false;
 
   constructor(private readonly remote: string) {}
 
@@ -43,22 +47,32 @@ export class FakePullRequests implements PullRequests {
 
   async find(repo: string, branch: string) {
     this.call(`find ${branch}`);
-    const pr = this.prs.find((p) => p.repo === repo && p.branch === branch && p.state === "open");
+    const pr = this.prs.findLast((p) => p.repo === repo && p.branch === branch);
     return pr ? { number: pr.number, url: url(pr.number) } : null;
   }
 
   async open(repo: string, pr: OpenPullRequest) {
     this.call(`open ${pr.branch}`);
+    if (this.refuseOpens) throw new GitHubError(422, "Validation Failed");
     const number = 100 + this.prs.length + 1;
-    this.prs.push({ ...pr, repo, number, draft: true, state: "open" });
+    this.prs.push({ ...pr, repo, number, state: "open" });
     return { number, url: url(number) };
   }
 
   async get(_repo: string, number: number): Promise<PullRequest> {
     this.call(`get ${number}`);
     const pr = this.pr(number);
-    const head = this.head(pr.branch);
-    return { number, url: url(number), head, draft: pr.draft, state: pr.state, checks: this.checksOf.get(head) ?? this.checks, conflicts: false };
+    const head = pr.headAtMerge ?? this.head(pr.branch);
+    return {
+      number,
+      url: url(number),
+      head,
+      draft: pr.draft,
+      state: pr.state,
+      checks: this.checksOf.get(head) ?? this.checks,
+      conflicts: false,
+      ...(pr.mergedAs && { mergeCommit: pr.mergedAs }),
+    };
   }
 
   async markReady(_repo: string, number: number) {
@@ -66,8 +80,9 @@ export class FakePullRequests implements PullRequests {
     this.pr(number).draft = false;
   }
 
-  async merge(_repo: string, number: number, { sha, title }: { sha: string; title: string }): Promise<MergeOutcome> {
+  async merge(_repo: string, number: number, { sha, title, method }: { sha: string; title: string; method: string }): Promise<MergeOutcome> {
     this.call(`merge ${number}`);
+    this.methods.push(method);
     const pr = this.pr(number);
     this.beforeMerge?.(pr);
     if (pr.draft) return { merged: false, why: "not-mergeable", message: "Pull Request is still a draft" };
@@ -82,28 +97,13 @@ export class FakePullRequests implements PullRequests {
     });
     pr.state = "merged";
     pr.mergedAs = merged;
+    pr.headAtMerge = sha;
     return { merged: true, sha: merged };
   }
 
   async commitChecks(_repo: string, sha: string) {
     this.call(`checks ${sha.slice(0, 7)}`);
     return this.checksOf.get(sha) ?? this.checks;
-  }
-
-  async revert(repo: string, number: number, opts: { title: string; body: string }) {
-    this.call(`revert ${number}`);
-    if (this.refuseReverts) throw new GitHubError(422, "GraphQL: revert not possible");
-    const pr = this.pr(number);
-    const branch = `revert-${number}`;
-    this.inClone((dir) => {
-      agentGit(dir, "checkout", "-q", "-b", branch, `origin/${pr.base}`);
-      agentGit(dir, "revert", "--no-edit", pr.mergedAs!);
-      agentGit(dir, "push", "-q", "origin", branch);
-    });
-    return this.open(repo, { branch, base: pr.base, title: opts.title, body: opts.body }).then((opened) => {
-      this.pr(opened.number).draft = false;
-      return opened;
-    });
   }
 
   /** The PR from `branch`, newest first. */

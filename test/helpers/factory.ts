@@ -30,6 +30,8 @@ export interface FakeFactoryOptions {
   /** Wraps the Job store the Orchestrator writes to, such as to make it fail. */
   wrapStore?: (store: JobStore) => JobStore;
   limits?: OrchestratorDeps["limits"];
+  /** GitHub's PRs to carry over, as across a restart: GitHub keeps them while the Factory is down. */
+  pulls?: FakePullRequests;
   /** Replaces waiting between transient retries; records how long it would have waited. */
   sleeps?: number[];
 }
@@ -52,7 +54,7 @@ export function factoryAt(home: string, remote: string, agent = new ScriptedAgen
   const artifacts = new ArtifactStore(home);
   const secrets = opts.secrets ?? new FakeSecrets();
   const notifier = new FakeNotifier();
-  const pulls = new FakePullRequests(remote);
+  const pulls = opts.pulls ?? new FakePullRequests(remote);
   const store = openSqliteJobStore(join(home, "factory.db"));
   const log = new EventLog(opts.wrapStore ? opts.wrapStore(store) : store);
   const orchestrator = new Orchestrator({
@@ -83,10 +85,10 @@ export function factoryAt(home: string, remote: string, agent = new ScriptedAgen
 }
 
 /**
- * The Job came through its Pipeline to the Merge gate, which asked a human: in the e2e config the
- * verify command names built.txt, which the build adds, so the gate reads it as a self-edit.
+ * The Job came through its Pipeline to the Merge gate, which passed and asked a human: the e2e
+ * config leaves Autonomy at trial, where you merge or `/approve`.
  */
 export function expectAtMergeGate(events: FactoryEvent[], over: Record<string, unknown> = {}): void {
   expect(events.at(-2)).toMatchObject({ type: "checkpoint-evaluated", data: { checkpoint: "merge-gate", outcome: "ask" }, ...over });
-  expect(events.at(-1)).toMatchObject({ type: "human-requested", data: { kind: "approval", cause: "self-edited-checks" }, ...over });
+  expect(events.at(-1)).toMatchObject({ type: "human-requested", data: { kind: "approval", cause: "autonomy" }, ...over });
 }

@@ -87,7 +87,7 @@ describe("Orchestrator with Trusted clones and Working copies", () => {
 
     await f.orchestrator.runUntilIdle();
 
-    expect(f.log.store.read().find((e) => e.type === "stage-failed")).toMatchObject({ data: { stage: "verify", summary: "`test -f built.txt` exited 1." } });
+    expect(f.log.store.read().find((e) => e.type === "stage-failed")).toMatchObject({ data: { stage: "verify", summary: '`test -f "$PWD/built.txt"` exited 1.' } });
   });
 
   test("with max_running: 1, a second Job waits in the queue until the first Stage run ends", async () => {

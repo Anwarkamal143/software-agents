@@ -19,4 +19,4 @@ pipelines:
 repos:
   - name: acme/web-app
     default_pipeline: feature
-    commands: { verify: ["test -f built.txt"] }
+    commands: { verify: ['test -f "$PWD/built.txt"'] }

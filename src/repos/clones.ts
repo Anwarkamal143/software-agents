@@ -222,6 +222,41 @@ export class Clones {
     });
   }
 
+  /**
+   * Reverts `merged` on top of the current default branch, in a worktree of the Trusted clone, and
+   * pushes it as `branch`. A branch this already pushed is reused, so a restart never makes a
+   * second revert. Null if the revert doesn't apply cleanly.
+   */
+  async pushRevert(repo: string, merged: string, branch: string): Promise<string | null> {
+    const { dir: cwd, defaultBranch } = await this.trustedClone(repo);
+    const ref = `refs/heads/${branch}`;
+    return this.exclusive(cwd, async () => {
+      const remote = (await this.git.run(["ls-remote", "--heads", "origin", ref], { cwd })).split("\t")[0]?.trim();
+      if (remote) return remote;
+      await this.git.run(["fetch", "--quiet", "--prune", "--no-tags", "origin"], { cwd });
+      const dir = join(this.home, "reverts", branch.replaceAll("/", "_"));
+      rmSync(dir, { recursive: true, force: true });
+      mkdirSync(join(dir, ".."), { recursive: true });
+      await this.git.test(["worktree", "prune"], { cwd });
+      await this.git.run(["worktree", "add", "--quiet", "--detach", dir, `refs/remotes/origin/${defaultBranch}`], { cwd });
+      try {
+        // A merge commit is reverted against its first parent; a squash or rebase has only the one.
+        const parents = (await this.git.run(["rev-list", "--parents", "-n", "1", merged], { cwd })).trim().split(" ").length - 1;
+        if (!(await this.git.test(["revert", "--no-edit", ...(parents > 1 ? ["-m", "1"] : []), merged], { cwd: dir }))) {
+          await this.git.test(["revert", "--abort"], { cwd: dir });
+          return null;
+        }
+        const head = (await this.git.run(["rev-parse", "HEAD"], { cwd: dir })).trim();
+        await this.git.run(["push", "--quiet", "--no-verify", "origin", `${head}:${ref}`], { cwd });
+        await this.git.run(["update-ref", ref, head], { cwd });
+        return head;
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+        await this.git.test(["worktree", "prune"], { cwd });
+      }
+    });
+  }
+
   private async defaultBranchOf(trustedClone: string): Promise<string> {
     return (await this.git.run(["symbolic-ref", "--short", "HEAD"], { cwd: trustedClone })).trim();
   }

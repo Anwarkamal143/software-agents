@@ -3,7 +3,7 @@ import { ulid } from "ulid";
 import type { AgentAdapter, MeasuredFacts, RateLimitInfo, RunErrorReason, SessionResume } from "../agents/adapter.js";
 import type { ConfigHolder } from "../config/holder.js";
 import { resolve, type Resolution, type ResolvedStage } from "../config/resolve.js";
-import type { StageCondition } from "../config/types.js";
+import type { MergeMethod, StageCondition } from "../config/types.js";
 import type { FactoryEvent, NewEvent } from "../events/envelope.js";
 import type { EventLog } from "../jobs/event-log.js";
 import type { JobState } from "../jobs/projection.js";
@@ -18,7 +18,7 @@ import { FACTORY_MARKER } from "../humans/commands.js";
 import { budgetAfterStageRun, budgetBeforeStageRun, spentToday, type BudgetHit } from "../policies/budgets.js";
 import type { Checkpoint } from "../policies/checkpoint.js";
 import type { PrePushChecks } from "../repos/prepush.js";
-import type { Clones, WorkingCopy } from "../repos/clones.js";
+import type { Clones, Rebase, WorkingCopy } from "../repos/clones.js";
 import { issueHash, SourceCredentialsRefused, type Source, type SourceItem } from "../source/source.js";
 import { renderBrief, renderHumanInput, type StageBrief } from "../stages/brief.js";
 import { parseReplyCommand } from "../humans/commands.js";
@@ -433,7 +433,7 @@ export class Orchestrator {
       if (merged?.actor !== "orchestrator" || typeof merged.data.sha !== "string") continue;
       if (events.some((e) => e.seq > merged.seq && e.type === "checkpoint-evaluated" && e.data.checkpoint === "after-merge")) continue;
       const approval = approvalOf(events);
-      const { policies } = resolve(this.deps.config.current, { repo: job.repo, labels: approval.labels });
+      const { policies, mergeMethod } = resolve(this.deps.config.current, { repo: job.repo, labels: approval.labels });
       const minutes = policies.post_merge_watch_minutes;
       if (!minutes) continue;
       const sha = merged.data.sha;
@@ -448,41 +448,60 @@ export class Orchestrator {
       if (checks === "green") {
         await this.record({ ...after, data: { checkpoint: "after-merge", outcome: "green", why: `CI passed on ${sha.slice(0, 12)}` } });
       } else if (checks === "red") {
-        await this.revert(job, Number(merged.data.number), sha, approval.title, policies.autonomy === "auto", merged.id);
+        await this.revert(job, Number(merged.data.number), sha, approval.title, policies.autonomy === "auto" ? mergeMethod : null, merged.id);
       } else if (this.now().getTime() - Date.parse(merged.at) > minutes * 60_000) {
         await this.record({ ...after, data: { checkpoint: "after-merge", outcome: "timed-out", why: `no CI result on ${sha.slice(0, 12)} within ${minutes} minutes` } });
       }
     }
   }
 
-  /** Opens the revert PR, and in auto merges it, before recording anything: GitHub failing just means trying again next pass. */
-  private async revert(job: JobState, number: number, sha: string, title: string, autoMerge: boolean, caused_by: string): Promise<void> {
+  /**
+   * Reverts the merge on a branch the Factory names and pushes itself, opens its PR, and in auto
+   * merges it, exactly at the commit pushed. Nothing is recorded until then: a restart finds the
+   * same branch and PR again, and GitHub being down just means trying again next pass.
+   */
+  /** `mergeWith` is how to merge the revert PR, in auto; null leaves it for you. */
+  private async revert(job: JobState, number: number, sha: string, title: string, mergeWith: MergeMethod | null, caused_by: string): Promise<void> {
     const why = `CI on the default branch went red at ${sha.slice(0, 12)} after #${number} merged.`;
+    const red = (more = "") => ({ ...jobEvent(job, caused_by), type: "checkpoint-evaluated", data: { checkpoint: "after-merge", outcome: "red", why: `${why}${more}` } }) as const;
+    const branch = `factory/${job.issue}-revert-${number}`;
+    const head = await this.deps.clones.pushRevert(job.repo, sha, branch);
+    // Later commits touched the same lines: a human reverts it.
+    if (!head) return void (await this.record(red(" It doesn't revert cleanly, so the Factory opened no revert PR.")));
     let revert: { number: number };
     let merged = false;
     try {
-      revert = await this.deps.pulls.revert(job.repo, number, {
-        title: `Revert "${cleanAgentText(title, MAX_PR_TITLE - 20)}" (#${number})`,
-        body: [FACTORY_MARKER, why, "", `Opened by the Factory for Job \`${job.job_id}\`; its status is kept on #${job.issue}.`, ""].join("\n"),
-      });
+      const { defaultBranch } = await this.deps.clones.trustedClone(job.repo);
+      revert =
+        (await this.deps.pulls.find(job.repo, branch)) ??
+        (await this.deps.pulls.open(job.repo, {
+          branch,
+          base: defaultBranch,
+          draft: false,
+          title: `Revert "${cleanAgentText(title, MAX_PR_TITLE - 20)}" (#${number})`,
+          body: [FACTORY_MARKER, why, "", `Opened by the Factory for Job \`${job.job_id}\`; its status is kept on #${job.issue}.`, ""].join("\n"),
+        }));
     } catch (err) {
       // Down: try again next pass. Refused outright: say so and end the watch, rather than ask GitHub every minute.
       if (err instanceof GitHubUnavailable) return;
       if (!(err instanceof GitHubError)) throw err;
-      await this.record({ ...jobEvent(job, caused_by), type: "checkpoint-evaluated", data: { checkpoint: "after-merge", outcome: "red", why: `${why} GitHub refused the revert PR: ${err.message}` } });
-      return;
+      return void (await this.record(red(` GitHub refused the revert PR: ${err.message}`)));
     }
-    if (autoMerge) {
+    if (mergeWith) {
       try {
-        const pr = await this.deps.pulls.get(job.repo, revert.number);
-        merged = (await this.deps.pulls.merge(job.repo, revert.number, { sha: pr.head, title: `Revert #${number}` })).merged;
+        // Merged already by a Factory that died before recording it; otherwise only at the commit the
+        // Factory pushed, never whatever someone else put on the branch since.
+        const state = await this.deps.pulls.get(job.repo, revert.number);
+        merged = state.state === "merged" || (state.head === head && (await this.deps.pulls.merge(job.repo, revert.number, { sha: head, title: `Revert #${number}`, method: mergeWith })).merged);
       } catch (err) {
         // The revert PR stands open for you; the watch is over either way.
         if (!gitHubFailed(err)) throw err;
       }
     }
-    const checked = await this.record({ ...jobEvent(job, caused_by), type: "checkpoint-evaluated", data: { checkpoint: "after-merge", outcome: "red", why } });
+    const checked = await this.record(red());
     await this.record({ ...jobEvent(job, checked.id), type: "reverted", data: { revert_pr: revert.number, merged, why } });
+    // Only once recorded: until then, the branch is how a restart finds this revert again.
+    if (merged) await this.deps.clones.deleteBranches(job.repo, [branch]).catch(() => null);
   }
 
   private now(): Date {
@@ -752,6 +771,7 @@ export class Orchestrator {
         branch: wc.branch,
         base: defaultBranch,
         title: cleanAgentText(approval.title, MAX_PR_TITLE),
+        draft: true,
         body: [FACTORY_MARKER, `Closes #${job.issue}.`, "", `Opened by the Factory for Job \`${job.job_id}\`; its status is kept on the issue.`, ""].join("\n"),
       }));
     await this.record({ ...jobEvent(job, caused_by), type: "pr-opened", data: { number: pr.number, url: pr.url } });
@@ -903,8 +923,7 @@ export class Orchestrator {
       if (gitHubFailed(err)) return false;
       throw err;
     }
-    // Someone else merged it: the Source reports that, and the Job ends then.
-    if (state.state === "merged") return false;
+    if (state.state === "merged") return this.mergedUnrecorded(ctx, pr, state);
 
     // A head the Orchestrator didn't push has no Evidence; there's nothing more to measure about it.
     const ours = state.head === head;
@@ -923,8 +942,13 @@ export class Orchestrator {
     // Waiting on the PR's checks: recorded once, not at every look.
     if (decision.action === "wait" && !ctx.reply && sameWait(ctx.events, state.head, decision)) return false;
 
+    // To merge, the branch must contain the current default branch: rebase first, and say so.
+    const rebase = decision.action === "merge" ? await this.deps.clones.rebaseOntoDefault(wc, state.head) : null;
     let last = ctx.cause;
-    for (const e of mergeGateEvents(state.head, gate, decision)) last = (await this.record({ ...jobEvent(job, last), ...e })).id;
+    for (const e of mergeGateEvents(state.head, gate, decision)) {
+      const data = e.type === "checkpoint-evaluated" && rebase ? { ...e.data, ...rebaseCheckpoint(rebase) } : e.data;
+      last = (await this.record({ ...jobEvent(job, last), ...e, data })).id;
+    }
     if (decision.action === "wait") return true;
     if (decision.action === "ask") {
       // Nothing but your say-so stands in the way: the PR is ready for you to review, or merge yourself.
@@ -934,14 +958,27 @@ export class Orchestrator {
       await this.askHuman(ctx, { kind: "approval", cause: decision.cause, text }, last);
       return true;
     }
-    return this.merge(ctx, pr, state, last!);
+    return this.merge(ctx, pr, state, rebase!, last!);
   }
 
-  /** Rebases if the default branch moved, then merges exactly the head the gate passed. */
-  private async merge(ctx: StepContext, pr: { number: number }, state: PullRequest, caused_by: string): Promise<boolean> {
-    const { job, wc, resolution, approval } = ctx;
+  /**
+   * GitHub says the PR is merged but the Event log doesn't: the Factory merged it and died before
+   * recording so, if its gate last decided to merge exactly this head. Anyone else's merge the
+   * Source reports, and the Job ends then.
+   */
+  private async mergedUnrecorded(ctx: StepContext, pr: { number: number }, state: PullRequest): Promise<boolean> {
+    const decided = ctx.events.findLast((e) => e.type === "checkpoint-evaluated" && e.data.checkpoint === "merge-gate");
+    const gateAt = ctx.events.findLast((e) => e.type === "merge-gate-evaluated");
+    if (decided?.data.outcome !== "merge" || gateAt?.data.head !== state.head || !state.mergeCommit) return false;
+    await this.record({ ...jobEvent(ctx.job, decided.id), type: "pr-merged", data: { number: pr.number, sha: state.mergeCommit } });
+    await this.cleanUp(ctx.job);
+    return true;
+  }
+
+  /** After the rebase: a moved branch is recorded (its Check Stages run next), a conflict Bounces, and an up-to-date one merges exactly the head the gate passed. */
+  private async merge(ctx: StepContext, pr: { number: number }, state: PullRequest, rebase: Rebase, caused_by: string): Promise<boolean> {
+    const { job, resolution, approval } = ctx;
     const head = state.head;
-    const rebase = await this.deps.clones.rebaseOntoDefault(wc, head);
     if (rebase.kind === "rebased") {
       await this.record({ ...jobEvent(job, caused_by), type: "rebased", data: { base: rebase.base, before: head, head: rebase.head } });
       return true;
@@ -963,7 +1000,7 @@ export class Orchestrator {
     let outcome;
     try {
       if (state.draft) await this.deps.pulls.markReady(job.repo, pr.number);
-      outcome = await this.deps.pulls.merge(job.repo, pr.number, { sha: head, title: `${cleanAgentText(approval.title, MAX_PR_TITLE - 10)} (#${pr.number})` });
+      outcome = await this.deps.pulls.merge(job.repo, pr.number, { sha: head, title: `${cleanAgentText(approval.title, MAX_PR_TITLE - 10)} (#${pr.number})`, method: resolution.mergeMethod });
     } catch (err) {
       if (gitHubFailed(err)) return false;
       throw err;
@@ -1132,6 +1169,14 @@ const MAX_PR_TITLE = 256;
 const MAX_VIOLATIONS_IN_EVENT = 20;
 
 const instant = (run: () => Promise<unknown>): Plan => ({ kind: "instant", run: async () => (await run(), true) });
+
+/** What a gate that decided to merge records instead, when the branch first had to be rebased. */
+function rebaseCheckpoint(rebase: Rebase): { outcome: string; why: string } | Record<string, never> {
+  const at = rebase.base.slice(0, 12);
+  if (rebase.kind === "rebased") return { outcome: "rebase", why: `the default branch moved to ${at}: rebasing, then the Check Stages run again` };
+  if (rebase.kind === "conflict") return { outcome: "rebase-conflict", why: `rebasing onto the default branch at ${at} conflicts` };
+  return {};
+}
 
 /** The gate last decided to wait, at the same head, for the same reason. */
 function sameWait(events: FactoryEvent[], head: string, decision: MergeDecision): boolean {

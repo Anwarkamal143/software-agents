@@ -123,7 +123,7 @@ describe("Orchestrator: one Job end to end", () => {
     await f.orchestrator.runUntilIdle();
 
     const failed = f.log.store.read().find((e) => e.type === "stage-failed")!;
-    expect(failed).toMatchObject({ actor: "stage:verify", data: { stage: "verify", summary: "`test -f built.txt` exited 1." } });
+    expect(failed).toMatchObject({ actor: "stage:verify", data: { stage: "verify", summary: '`test -f "$PWD/built.txt"` exited 1.' } });
     expect((failed.data.output as { size: number }).size).toBeGreaterThan(0);
     expect(f.agent.requests[2]!.brief.earlier.at(-1)).toMatchObject({ stage: "verify", verdict: "fail" });
     expectAtMergeGate(f.log.store.read());
@@ -303,7 +303,7 @@ describe("Orchestrator: one Job end to end", () => {
   });
 
   test("the same Check Stage command failing twice is a repeated root cause, even when its output differs", async () => {
-    const config = fixture("e2e.yaml").replace('verify: ["test -f built.txt"]', () => 'verify: ["echo pid $$; test -f built.txt"]');
+    const config = fixture("e2e.yaml").replace(`verify: ['test -f "$PWD/built.txt"']`, () => `verify: ['echo pid $$; test -f "$PWD/built.txt"']`);
     const f = fakeFactory(new ScriptedAgent(), config);
     f.source.push(approved(7));
 

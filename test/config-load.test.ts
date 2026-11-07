@@ -82,3 +82,13 @@ describe("loadConfig: layer rules", () => {
     expect(r.ok ? [] : r.problems).toEqual(["state.store: postgres isn't available yet; use sqlite."]);
   });
 });
+
+describe("loadConfig: merge_method", () => {
+  test("only squash, merge or rebase", () => {
+    const with_ = (m: string) => loadConfig(fixture("minimal.yaml").replace(/( {2}- name: [^\n]+\n)/, `$1    merge_method: ${m}\n`));
+    expect(with_("rebase").ok).toBe(true);
+    const bad = with_("fast-forward");
+    expect(bad.ok).toBe(false);
+    expect(!bad.ok && bad.problems.join("\n")).toMatch(/merge_method/);
+  });
+});
