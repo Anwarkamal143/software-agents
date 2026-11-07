@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import picomatch from "picomatch";
 import { ulid } from "ulid";
 import type { AgentAdapter, MeasuredFacts, RateLimitInfo, RunErrorReason, SessionResume } from "../agents/adapter.js";
@@ -726,7 +727,7 @@ export class Orchestrator {
       brief,
       renderedBrief: renderBrief(brief),
       model: stage.model!,
-      workingCopy: { dir: wc.path, env: wc.env },
+      workingCopy: { dir: wc.path, env: wc.env, objects: join(wc.trustedClone, "objects") },
       network: stage.tools === "write-branch" ? (stage.network ?? []) : [],
       budget: ctx.resolution.policies.budgets.stage_run,
       resultSchema: STAGE_RESULT_SCHEMA,

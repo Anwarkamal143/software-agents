@@ -160,4 +160,59 @@ describe("Clones", () => {
     expect(gone).toEqual(["factory/7", "factory/never-pushed"]);
     expect(agentGit(remote, "branch", "--list", "factory/*")).toBe("");
   });
+
+  describe("GitHub credentials", () => {
+    function withToken(token: (repo: string) => Promise<string>) {
+      const root = tmpHome();
+      const remote = makeRemote(root);
+      const home = join(root, "factory-home");
+      const asked: string[] = [];
+      const clones = new Clones(home, {
+        remoteUrl: () => remote,
+        token: (repo) => {
+          asked.push(repo);
+          return token(repo);
+        },
+      });
+      return { root, remote, home, clones, asked };
+    }
+
+    test("every call that reaches the remote asks for that repo's token; local work doesn't", async () => {
+      const { clones, asked, home } = withToken(async () => "ghs_secret");
+
+      const wc = await clones.startAttempt({ repo: "acme/web-app", job_id: "job-1", attempt: 1, branch: "factory/7" });
+      expect(asked.length).toBeGreaterThan(0);
+      expect(new Set(asked)).toEqual(new Set(["acme/web-app"]));
+
+      asked.length = 0;
+      writeIn(wc.path, "src/health.ts", "export const health = 'ok';\n");
+      commitAll(wc.path);
+      const incoming = await clones.receive(wc);
+      expect(asked).toEqual([]);
+
+      await clones.push(wc, incoming, { remoteHead: null });
+      expect(asked).toEqual(["acme/web-app"]);
+
+      asked.length = 0;
+      await clones.defaultHead("acme/web-app");
+      await clones.deleteBranches("acme/web-app", ["factory/7"]);
+      expect(asked.length).toBeGreaterThan(0);
+      expect(new Set(asked)).toEqual(new Set(["acme/web-app"]));
+
+      // Never written down: not in the Trusted clone's config nor the Working copy's.
+      for (const config of [join(home, "repos", "acme", "web-app.git", "config"), join(wc.path, ".git", "config")]) {
+        expect(readFileSync(config, "utf8")).not.toContain("ghs_secret");
+      }
+    });
+
+    test("a repo the Factory has no token for fails with the token's own error", async () => {
+      const { clones } = withToken(async (repo) => {
+        throw new Error(`finding the App's installation on ${repo} (is the App installed there?)`);
+      });
+
+      await expect(clones.startAttempt({ repo: "acme/web-app", job_id: "job-1", attempt: 1, branch: "factory/7" })).rejects.toThrow(
+        "is the App installed there?",
+      );
+    });
+  });
 });

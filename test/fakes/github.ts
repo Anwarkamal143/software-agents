@@ -88,6 +88,13 @@ export class FakeGitHub {
     return entry;
   }
 
+  /** Someone deletes a comment: its entry leaves the timeline, and the issue counts as updated at `at`. */
+  deleteComment(repo: string, number: number, id: number, at: string): void {
+    const it = this.get(repo, number);
+    it.timeline = it.timeline.filter((e) => e.id !== id);
+    it.issue.updated_at = at;
+  }
+
   label(repo: string, number: number, at: string, by: string, name = "factory:ready") {
     return this.happen(repo, number, "labeled", at, by, { label: { name, color: "0e8a16" } });
   }

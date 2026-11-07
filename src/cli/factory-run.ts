@@ -12,7 +12,7 @@ import { EventLog } from "../jobs/event-log.js";
 import { GitHubMirror, recordDropped } from "../mirror/github.js";
 import { Orchestrator } from "../orchestrator/orchestrator.js";
 import { runFactory } from "../orchestrator/foreground.js";
-import { Clones } from "../repos/clones.js";
+import { gitHubClones } from "../repos/clones.js";
 import { PrePushChecks } from "../repos/prepush.js";
 import { checkSecretKey, OsKeychain, type SecretStore } from "../secrets/keychain.js";
 import { resolveSecretRef } from "../secrets/refs.js";
@@ -37,7 +37,8 @@ export async function factoryRun(home: string, signal: AbortSignal, report: (s: 
   const store = openSqliteJobStore(paths.jobStore);
   try {
     const log = new EventLog(store);
-    const client = new GitHubClient({ auth: await githubAuthFromKeychain(secrets) });
+    const auth = await githubAuthFromKeychain(secrets);
+    const client = new GitHubClient({ auth });
     const readyLabel = () => config.current.sources[0]?.ready_label ?? "factory:ready";
     const source = new GitHubSource({
       client,
@@ -62,7 +63,7 @@ export async function factoryRun(home: string, signal: AbortSignal, report: (s: 
         return out;
       },
     });
-    const clones = new Clones(home, { remoteUrl: (repo) => `https://github.com/${repo}.git` });
+    const clones = gitHubClones(home, auth);
     const artifacts = new ArtifactStore(home);
     const orchestrator = new Orchestrator({
       log,

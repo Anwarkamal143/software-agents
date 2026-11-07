@@ -10,6 +10,7 @@ import { FakeGitHub } from "./fakes/github.js";
 import { FakeSecrets } from "./fakes/secrets.js";
 import { tmpHome } from "./helpers/tmp.js";
 
+const OLD_PEM = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs1", format: "pem" }).toString();
 const PEM = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs1", format: "pem" }).toString();
 
 function setup(over: Partial<InitDeps> = {}) {
@@ -70,6 +71,29 @@ describe("factory init", () => {
     expect(readFileSync(join(s.home, "factory.yaml"), "utf8")).toContain("# mine");
   });
 
+  test("an App deleted on GitHub is replaced by a new one through the manifest flow", async () => {
+    const s = setup({ secrets: new FakeSecrets({ [GITHUB_SECRETS.appId]: "999", [GITHUB_SECRETS.privateKey]: OLD_PEM }) });
+    s.deps.fetch = async (url) => (new URL(url).pathname === "/app" ? Response.json({ message: "Integration not found" }, { status: 404 }) : new Response("", { status: 404 }));
+
+    await factoryInit({}, s.deps);
+
+    expect(s.flows()).toBe(1);
+    expect(await s.deps.secrets.get(GITHUB_SECRETS.appId)).toBe("1001");
+    expect(await s.deps.secrets.get(GITHUB_SECRETS.privateKey)).toBe(PEM);
+    expect(s.out()).toMatch(/no longer exists on GitHub/);
+  });
+
+  test("an App GitHub refuses for another reason fails init and keeps its credentials", async () => {
+    const s = setup({ secrets: new FakeSecrets({ [GITHUB_SECRETS.appId]: "999", [GITHUB_SECRETS.privateKey]: PEM }) });
+    s.deps.fetch = async () => Response.json({ message: "Bad credentials" }, { status: 401 });
+
+    await expect(factoryInit({}, s.deps)).rejects.toThrow(/isn't accepted by GitHub: run `factory init --token`/);
+
+    expect(s.flows()).toBe(0);
+    expect(await s.deps.secrets.get(GITHUB_SECRETS.appId)).toBe("999");
+    expect(await s.deps.secrets.get(GITHUB_SECRETS.privateKey)).toBe(PEM);
+  });
+
   test("on Linux without bubblewrap it prints the install command", async () => {
     const s = setup({ platform: "linux", hasCommand: async (c) => c !== "bwrap" });
     await factoryInit({}, s.deps);
@@ -110,7 +134,7 @@ describe("the GitHub App manifest flow", () => {
     const manifest = JSON.parse(/name="manifest" value="([^"]+)"/.exec(page)![1]!.replaceAll("&quot;", '"').replaceAll("&lt;", "<").replaceAll("&amp;", "&")) as Record<string, unknown>;
     expect(manifest).toMatchObject({
       public: false,
-      default_permissions: { contents: "write", pull_requests: "write", issues: "write", checks: "read", metadata: "read" },
+      default_permissions: { contents: "write", pull_requests: "write", issues: "write", checks: "read", statuses: "read", metadata: "read" },
       default_events: [],
     });
     expect(manifest).not.toHaveProperty("hook_attributes");

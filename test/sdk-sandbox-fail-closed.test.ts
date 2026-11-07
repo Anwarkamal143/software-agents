@@ -41,7 +41,7 @@ describe.runIf(process.platform === "linux")("Claude adapter on Linux without bu
         brief: { stage: "build", tools: "write-branch" } as AgentRunRequest["brief"],
         renderedBrief: "x",
         model: "claude-haiku-5-5",
-        workingCopy: { dir: wc, env: { HOME: wc, XDG_CONFIG_HOME: wc, XDG_CACHE_HOME: wc, npm_config_cache: wc, TMPDIR: wc } },
+        workingCopy: { dir: wc, env: { HOME: wc, XDG_CONFIG_HOME: wc, XDG_CACHE_HOME: wc, npm_config_cache: wc, TMPDIR: wc }, objects: join(wc, "objects") },
         network: [],
         budget: { usd: 0.1, turns: 1, minutes: 1 },
         resultSchema: STAGE_RESULT_SCHEMA,

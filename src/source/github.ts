@@ -24,8 +24,21 @@ interface RepoCursor {
   since: string;
   /** The issue list's ETag, for a conditional request. */
   etag?: string;
-  /** Per issue: how many timeline entries have been read, and hashes of the title and body last seen. */
-  issues: Record<string, { seen: number; title: string; body: string }>;
+  /**
+   * Per issue: how far its timeline has been read, and hashes of the title and body last seen.
+   * An older Factory saved `seen`, a count of entries, which a deleted comment throws off.
+   */
+  issues: Record<string, { read?: TimelineRead; seen?: number; title: string; body: string }>;
+}
+
+/**
+ * How far an issue's timeline has been read: the time of the latest entry read, and the entries
+ * read at exactly that time, as two can share a second. Times and ids, not a count, so a deleted
+ * entry can't hide the next one.
+ */
+interface TimelineRead {
+  through: string;
+  keys: string[];
 }
 
 interface Cursor {
@@ -51,6 +64,30 @@ interface TimelineEntry {
   label?: { name: string };
   body?: string;
   rename?: { from: string; to: string };
+}
+
+/** What tells two timeline entries at the same time apart. */
+function entryKey(e: TimelineEntry): string {
+  return e.id !== undefined ? String(e.id) : `${e.event}@${e.created_at}`;
+}
+
+/** `read` moved on past the `fresh` entries just read. */
+function readThrough(read: TimelineRead, fresh: TimelineEntry[]): TimelineRead {
+  let { through, keys } = read;
+  for (const e of fresh) {
+    if (e.created_at! > through) [through, keys] = [e.created_at!, []];
+    if (e.created_at === through) keys = [...keys, entryKey(e)];
+  }
+  return { through, keys };
+}
+
+/**
+ * A read saved by an older Factory as a count, taken as read up to the repo's `since`: the latest
+ * update of any issue it polled, so no later than anything it read. Entries at exactly that time
+ * count as read, so none comes twice.
+ */
+function readFromCount(timeline: TimelineEntry[], since: string): TimelineRead {
+  return { through: since, keys: timeline.filter((e) => e.created_at === since).map(entryKey) };
 }
 
 /** After GitHub stays down past its transient retries, wait this long, doubling, up to the cap. */
@@ -131,9 +168,12 @@ export class GitHubSource implements Source {
   private async readIssue(repo: string, issue: Issue, state: RepoCursor, config: GitHubSourceConfig, emit: (at: string, item: SourceItem) => void) {
     const { client } = this.options;
     const seen = state.issues[String(issue.number)];
-    const timeline = await client.all<TimelineEntry>(`/repos/${repo}/issues/${issue.number}/timeline?per_page=100`, { repo });
+    const all = await client.all<TimelineEntry>(`/repos/${repo}/issues/${issue.number}/timeline?per_page=100`, { repo });
+    // Only entries with a time are ever acted on, and the time is what the read is measured by.
+    const timeline = all.filter((e) => e.created_at !== undefined);
     // An issue never seen before: only what happened since the repo was added counts.
-    const fresh = seen ? timeline.slice(seen.seen) : timeline.filter((e) => (e.created_at ?? "") >= state.added);
+    const read = seen ? (seen.read ?? readFromCount(timeline, state.since)) : { through: state.added, keys: [] };
+    const fresh = timeline.filter((e) => e.created_at! > read.through || (e.created_at === read.through && !read.keys.includes(entryKey(e))));
     const text: IssueText = { number: issue.number, title: issue.title, body: issue.body ?? "" };
     const labels = issue.labels.map((l) => (typeof l === "string" ? l : l.name));
     const allowed = (login: string | undefined): login is string => login !== undefined && config.humans.includes(login);
@@ -164,7 +204,7 @@ export class GitHubSource implements Source {
       const by = editors.find((l) => !allowed(l)) ?? editors[0] ?? null;
       emit(issue.updated_at, { kind: "edited", repo, issue: text, hash: issueHash(text), by });
     }
-    return { seen: timeline.length, ...hashes };
+    return { read: readThrough(read, fresh), ...hashes };
   }
 
   /** Who last edited the issue body: REST doesn't say, GraphQL does. */

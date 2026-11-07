@@ -236,6 +236,8 @@ export function sessionOptions(request: AgentRunRequest, ctx: { home: string; us
       filesystem: {
         allowWrite: writes ? [wc.dir, wc.env.TMPDIR, wc.env.XDG_CACHE_HOME] : [wc.env.TMPDIR],
         denyRead: [ctx.home, ...HOME_CREDENTIALS.map((p) => join(ctx.userHome, p)), `${wc.dir}/**/.env*`],
+        // The Attempt's folders sit inside the Factory home, so they're let back in; `.env*` stays denied, as the Sandbox applies that pattern after these.
+        allowRead: [wc.dir, wc.env.HOME, wc.env.XDG_CACHE_HOME, wc.env.TMPDIR, wc.objects],
       },
       // Strict twice over: unknown hosts are blocked, not asked about (ADR 0007). Read-only Stages get none.
       network: { allowedDomains: writes ? request.network : [], strictAllowlist: true },
