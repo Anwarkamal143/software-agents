@@ -398,6 +398,11 @@ export class Orchestrator {
     }
   }
 
+  /** The issue's most recent Job, live or ended. */
+  private lastJob(repo: string, issue: number): JobState | undefined {
+    return this.deps.log.jobs().findLast((j) => j.repo === repo && j.issue === issue);
+  }
+
   private liveJob(repo: string, issue: number): JobState | undefined {
     return this.deps.log.jobs().find((j) => j.repo === repo && j.issue === issue && isLive(j));
   }
@@ -414,25 +419,42 @@ export class Orchestrator {
     const issue = item.issue.number;
     if (this.liveJob(item.repo, issue)) return; // One live Job per issue.
     // Re-labelling a failed or cancelled Job starts its next Attempt; after a merge, a new Job.
-    const ended = this.deps.log.jobs().findLast((j) => j.repo === item.repo && j.issue === issue);
+    const ended = this.lastJob(item.repo, issue);
+    const endedEvents = ended ? this.deps.log.eventsFor(ended.job_id) : [];
+    // Someone not on `humans` edited the issue since it was last approved (#58): the label doesn't
+    // approve their text. The Job waits for re-approval naming them, as for an edit to a live Job.
+    const unapproved = unapprovedEdit(endedEvents);
     if (ended && (ended.status === "failed" || ended.status === "cancelled")) {
       await this.record({
         type: "job-retried",
         job_id: ended.job_id,
         attempt: ended.attempt,
         actor: `human:${item.by}`,
-        data: { title: item.issue.title, body: item.issue.body, labels: item.labels },
+        data: unapproved ? { labels: item.labels } : { title: item.issue.title, body: item.issue.body, labels: item.labels },
       });
       return;
     }
     const branch = attemptBranch(issue, this.attemptsOfIssue(item.repo, issue) + 1);
     const job_id = ulid();
+    // With such an edit pending, the new Job starts from the text last approved, and the edit waits on it.
+    const approvedText = unapproved ? approvalOf(endedEvents) : item.issue;
     const approval = await this.record({
       type: "job-approved",
       job_id,
       actor: `human:${item.by}`,
-      data: { repo: item.repo, issue, title: item.issue.title, body: item.issue.body, labels: item.labels },
+      data: { repo: item.repo, issue, title: approvedText.title, body: approvedText.body, labels: item.labels },
     });
+    // Recorded with the approval, before anything can fail, so the new Job never starts without it.
+    if (unapproved) {
+      const by = editorOf(unapproved);
+      await this.record({
+        job_id,
+        caused_by: approval.id,
+        actor: by ? `human:${by}` : "orchestrator",
+        type: "issue-edited",
+        data: { hash: issueHash(item.issue), title: item.issue.title, body: item.issue.body, allowed: false, ...(by && { by }) },
+      });
+    }
     const wc = await this.deps.clones.startAttempt({ repo: item.repo, job_id, attempt: 1, branch });
     await this.record({ type: "attempt-started", job_id, attempt: 1, actor: "orchestrator", caused_by: approval.id, data: { branch, base: wc.base } });
   }
@@ -444,22 +466,31 @@ export class Orchestrator {
    */
   private async edited(item: Extract<SourceItem, { kind: "edited" }>): Promise<void> {
     const live = this.liveJob(item.repo, item.issue.number);
-    if (!live) return;
-    const events = this.deps.log.eventsFor(live.job_id);
+    // With no live Job, the edit is kept on the issue's last Job, so the next approval knows of it (#58).
+    const job = live ?? this.lastJob(item.repo, item.issue.number);
+    if (!job) return;
+    const events = this.deps.log.eventsFor(job.job_id);
     const known = events.filter((e) => e.type === "issue-edited").map((e) => e.data.hash);
     if (issueHash(approvalOf(events)) === item.hash || known.at(-1) === item.hash) return;
     const allowed = item.by !== null && this.deps.config.current.humans.includes(item.by);
+    // After the Job ended, an edit by someone on `humans` matters only as re-approval of one by someone not on it.
+    if (!live && allowed && !unapprovedEdit(events)) return;
     const actor = item.by ? (`human:${item.by}` as const) : ("orchestrator" as const);
     const edit = await this.record({
-      ...jobEvent(live, null),
+      ...jobEvent(job, null),
       actor,
       type: "issue-edited",
       data: { hash: item.hash, title: item.issue.title, body: item.issue.body, allowed, ...(item.by && { by: item.by }) },
     });
-    if (allowed) return;
-    const needed = await this.record({ ...jobEvent(live, edit.id), type: "job-reapproval-needed", data: item.by ? { editor: item.by } : {} });
-    const who = item.by ?? "Someone GitHub doesn't name";
-    await this.askHuman(this.context(this.deps.log.job(live.job_id)!), { kind: "approval", cause: "reapproval", text: `${who} edited the issue after it was approved, and isn't on humans.` }, needed.id);
+    if (live && !allowed) await this.holdForReapproval(live, edit);
+  }
+
+  /** Sends the Job to waiting until a human `/approve`s the edit by someone not on `humans` (ADR 0007). */
+  private async holdForReapproval(job: JobState, edit: FactoryEvent): Promise<void> {
+    const by = editorOf(edit);
+    const needed = await this.record({ ...jobEvent(job, edit.id), type: "job-reapproval-needed", data: by ? { editor: by } : {} });
+    const who = by ?? "Someone GitHub doesn't name";
+    await this.askHuman(this.context(this.deps.log.job(job.job_id)!), { kind: "approval", cause: "reapproval", text: `${who} edited the issue after it was approved, and isn't on humans.` }, needed.id);
   }
 
   /** A comment on a Job's issue: a Reply command is recorded, or logged as ignored; anything else is discussion. */
@@ -634,7 +665,11 @@ export class Orchestrator {
     if (this.deps.config.refresh().changed) {
       await this.record({ type: "config-reloaded", actor: "orchestrator", data: { config_hash: this.deps.config.hash } });
     }
-    const retried = pendingRetry(this.deps.log.eventsFor(job.job_id));
+    const events = this.deps.log.eventsFor(job.job_id);
+    // An approval that took an edit by someone not on `humans` (#58): re-approval first, before any Stage runs.
+    const edit = editToAsk(events);
+    if (edit) return instant(() => this.holdForReapproval(job, edit));
+    const retried = pendingRetry(events);
     if (retried) return instant(() => this.nextAttempt(job, retried));
     const ctx = this.context(job);
     const base = { job_id: job.job_id, attempt: job.attempt, caused_by: ctx.cause };
@@ -1378,6 +1413,33 @@ function pendingRetry(events: FactoryEvent[]): FactoryEvent | null {
 }
 
 /**
+ * The latest edit by someone not on `humans` (or GitHub didn't say who) that nobody has approved
+ * since: not by a Job approval, a later edit by someone on `humans`, or an `/approve` of it.
+ * A re-label doesn't approve it: that would approve text a human never saw as theirs (#58).
+ */
+function unapprovedEdit(events: FactoryEvent[]): FactoryEvent | null {
+  const byId = new Map(events.map((e) => [e.id, e]));
+  let edit: FactoryEvent | null = null;
+  for (const e of events) {
+    if (e.type === "job-approved") edit = null;
+    else if (e.type === "issue-edited") edit = e.data.allowed === true ? null : e;
+    else if (e.type === "human-answered" && e.data.command === "approve" && byId.get(String(e.data.request))?.data.cause === "reapproval") edit = null;
+  }
+  return edit;
+}
+
+/** Who made an `issue-edited`, or null when GitHub didn't say. */
+const editorOf = (edit: FactoryEvent): string | null => (typeof edit.data.by === "string" ? edit.data.by : null);
+
+/** An unapproved edit that hasn't been asked about since it, or since the Job was last retried. */
+function editToAsk(events: FactoryEvent[]): FactoryEvent | null {
+  const edit = unapprovedEdit(events);
+  if (!edit) return null;
+  const since = Math.max(edit.seq, events.findLast((e) => e.type === "job-retried")?.seq ?? 0);
+  return events.some((e) => e.type === "job-reapproval-needed" && e.seq > since) ? null : edit;
+}
+
+/**
  * The issue as last approved: at Job approval, re-approved by re-labelling for a new Attempt,
  * or edited since by someone on `humans` (or by anyone, once a human `/approve`d the edit).
  */
@@ -1391,6 +1453,9 @@ function approvalOf(events: FactoryEvent[]): Approval {
       text = e.data;
       labels = e.data.labels ?? labels;
       pendingEdit = null;
+    } else if (e.type === "job-retried") {
+      // A re-label that left the text out: an edit by someone not on `humans` waits on re-approval (#58).
+      labels = e.data.labels ?? labels;
     } else if (e.type === "issue-edited") {
       if (e.data.allowed === true) text = e.data;
       else pendingEdit = e.data;

@@ -1,4 +1,4 @@
-import type { Source, SourceItem } from "../../src/source/source.js";
+import { issueHash, type Source, type SourceItem } from "../../src/source/source.js";
 
 /** A Source that hands out whatever the test pushes, once. */
 export class FakeSource implements Source {
@@ -31,6 +31,12 @@ export const approved = (issue: number, labels: string[] = [], body = "Please do
   labels: ["factory:ready", ...labels],
   by: "alice",
 });
+
+/** Issue `issue`'s body edited to `body` by `by` (null: GitHub doesn't say who). */
+export const edited = (issue: number, body: string, by: string | null): SourceItem => {
+  const text = { number: issue, title: `Issue ${issue}`, body };
+  return { kind: "edited", repo: "acme/web-app", issue: text, hash: issueHash(text), by };
+};
 
 let comments = 0;
 /** A comment on issue `issue`, by alice and written a second from now unless told otherwise. */

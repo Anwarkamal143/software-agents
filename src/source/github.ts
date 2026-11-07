@@ -90,6 +90,13 @@ function readFromCount(timeline: TimelineEntry[], since: string): TimelineRead {
   return { through: since, keys: timeline.filter((e) => e.created_at === since).map(entryKey) };
 }
 
+/** Who made an edit and when, each null when GitHub doesn't say. */
+interface Edit {
+  by: string | null;
+  at: string | null;
+}
+const NO_EDIT: Edit = { by: null, at: null };
+
 /** After GitHub stays down past its transient retries, wait this long, doubling, up to the cap. */
 const BACKOFF_START_MS = 60_000;
 const BACKOFF_MAX_MS = 15 * 60_000;
@@ -197,27 +204,32 @@ export class GitHubSource implements Source {
 
     const hashes = { title: sha(issue.title), body: sha(issue.body ?? "") };
     if (seen && !isPr && (seen.title !== hashes.title || seen.body !== hashes.body)) {
-      const titleBy = seen.title !== hashes.title ? (fresh.findLast((e) => e.event === "renamed")?.actor?.login ?? null) : null;
-      const bodyBy = seen.body !== hashes.body ? await this.bodyEditor(repo, issue.number) : null;
+      const renamed = seen.title !== hashes.title ? fresh.findLast((e) => e.event === "renamed") : undefined;
+      const titleEdit: Edit = renamed ? { by: renamed.actor?.login ?? null, at: renamed.created_at ?? null } : NO_EDIT;
+      const bodyEdit = seen.body !== hashes.body ? await this.bodyEdit(repo, issue.number) : NO_EDIT;
       // When two people edited, the one who isn't allowed decides: the edit needs re-approval.
-      const editors = [bodyBy, titleBy].filter((l): l is string => l !== null);
+      const editors = [bodyEdit.by, titleEdit.by].filter((l): l is string => l !== null);
       const by = editors.find((l) => !allowed(l)) ?? editors[0] ?? null;
-      emit(issue.updated_at, { kind: "edited", repo, issue: text, hash: issueHash(text), by });
+      // At when the edit was made, so it comes in order with a ready label after it (#58); else at the issue's last update.
+      const times = [bodyEdit.at, titleEdit.at].filter((t): t is string => t !== null);
+      const at = times.length ? times.reduce((a, b) => (a > b ? a : b)) : issue.updated_at;
+      emit(at, { kind: "edited", repo, issue: text, hash: issueHash(text), by });
     }
     return { read: readThrough(read, fresh), ...hashes };
   }
 
-  /** Who last edited the issue body: REST doesn't say, GraphQL does. */
-  private async bodyEditor(repo: string, number: number): Promise<string | null> {
+  /** Who last edited the issue body, and when: REST doesn't say, GraphQL does. */
+  private async bodyEdit(repo: string, number: number): Promise<Edit> {
     const [owner, name] = repo.split("/");
-    const res = await this.options.client.request<{ data?: { repository?: { issueOrPullRequest?: { editor?: { login: string } | null } | null } } }>("POST", "/graphql", {
+    const res = await this.options.client.request<{ data?: { repository?: { issueOrPullRequest?: { editor?: { login: string } | null; lastEditedAt?: string | null } | null } } }>("POST", "/graphql", {
       repo,
       body: {
-        query: "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issueOrPullRequest(number:$number){... on Issue{editor{login}}}}}",
+        query: "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issueOrPullRequest(number:$number){... on Issue{editor{login} lastEditedAt}}}}",
         variables: { owner, name, number },
       },
     });
-    return res.body?.data?.repository?.issueOrPullRequest?.editor?.login ?? null;
+    const edited = res.body?.data?.repository?.issueOrPullRequest;
+    return { by: edited?.editor?.login ?? null, at: edited?.lastEditedAt ?? null };
   }
 
   private now(): number {

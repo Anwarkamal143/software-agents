@@ -34,8 +34,8 @@ export class FakeGitHub {
   /** Once this many requests have been made, every later one fails with a 502. */
   failAfter: number | null = null;
   rateLimit = 5000;
-  /** Who GraphQL says last edited an issue body. */
-  editor: string | null = null;
+  /** Per `repo#number`: who GraphQL says last edited the issue body, and when. */
+  private bodyEdits = new Map<string, { editor: string; at: string }>();
   permissions = new Map<string, string>([["alice", "write"], ["bob", "admin"]]);
   /** Unreachable: every request fails as a network error would. */
   down = false;
@@ -108,7 +108,7 @@ export class FakeGitHub {
     }
     if (change.body !== undefined) {
       it.issue.body = change.body;
-      this.editor = by;
+      this.bodyEdits.set(`${repo}#${number}`, { editor: by, at });
     }
     it.issue.updated_at = at;
   }
@@ -191,7 +191,11 @@ export class FakeGitHub {
       const permission = this.permissions.get(decodeURIComponent(m[2]!));
       return permission ? json(recorded("permission", { permission, role_name: permission })) : json({ message: "Not Found" }, {}, 404);
     }
-    if (u.pathname === "/graphql") return json(recorded("graphql-editor", { data: { repository: { issueOrPullRequest: { editor: this.editor ? { login: this.editor } : null } } } }));
+    if (u.pathname === "/graphql") {
+      const { variables: v } = JSON.parse(String(init.body)) as { variables: { owner: string; name: string; number: number } };
+      const edit = this.bodyEdits.get(`${v.owner}/${v.name}#${v.number}`);
+      return json(recorded("graphql-editor", { data: { repository: { issueOrPullRequest: { editor: edit ? { login: edit.editor } : null, lastEditedAt: edit?.at ?? null } } } }));
+    }
     return json({ message: "Not Found" }, {}, 404);
   };
 
