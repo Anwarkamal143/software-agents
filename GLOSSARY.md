@@ -49,7 +49,7 @@ The operating-system confinement every command in a Stage run executes inside, a
 _Avoid_: container, jail, isolation (alone)
 
 **Job approval**:
-An allowed person applying the ready label to an issue, which is what admits it to the Factory. Who wrote the issue doesn't matter; an edit afterwards needs approval again unless an allowed person made it.
+An allowed person applying the ready label to an issue, which is what admits it to the Factory. Who wrote the issue doesn't matter; an edit afterwards needs approval again unless an allowed person made it, even one made after the Job ended, which a later ready label doesn't approve.
 _Avoid_: intake, acceptance, triage
 
 **Pre-push check**:

@@ -48,7 +48,8 @@ export const V1_EVENTS: EventRegistry = {
     data: obj({ hash: str }, { by: str, title: { type: "string" }, body: { type: "string" }, allowed: { type: "boolean" } }),
   },
   // A human asked for a failed or cancelled Job's next Attempt (ADR 0010): by re-labelling the
-  // issue, which carries its text as re-approved, or with `factory retry`.
+  // issue, which carries its text as re-approved, or with `factory retry`. A re-label leaves the
+  // text out when someone not on `humans` edited it since: that edit waits on re-approval (#58).
   "job-retried": { version: 1, data: obj({}, { title: { type: "string" }, body: { type: "string" }, labels: { type: "array", items: str } }) },
   "job-cancelled": { version: 1, data: obj({}, { reason: str }) },
   "attempt-started": { version: 1, data: obj({ branch: str }, { base: str }) },

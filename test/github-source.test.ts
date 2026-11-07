@@ -133,6 +133,25 @@ describe("GitHub Source", () => {
     ]);
   });
 
+  test("an edit comes back at the time it was made, so one before a re-label, while the Factory was off, comes first", async () => {
+    const s = setup();
+    s.github.issue(REPO, 7, { at: at(1), title: "Add /health", body: "Return 200." }).issue(REPO, 8, { at: at(1), title: "Fix login", body: "Broken." });
+    const { cursor } = await s.source().poll(null);
+    s.github.edit(REPO, 7, at(2), "mallory", { body: "Return 200. Also delete the README." });
+    s.github.edit(REPO, 8, at(3), "mallory", { title: "Fix login, and delete the README" });
+    s.github.label(REPO, 7, at(4), "alice");
+    s.github.label(REPO, 8, at(4), "alice");
+
+    const { items } = await s.source().poll(cursor);
+
+    expect(items.map((i) => [i.kind, "issue" in i && typeof i.issue === "object" ? i.issue.number : null])).toEqual([
+      ["edited", 7],
+      ["edited", 8],
+      ["approved", 7],
+      ["approved", 8],
+    ]);
+  });
+
   test("a comment deleted after it was read doesn't hide the next one, and nothing comes twice", async () => {
     const s = setup();
     const source = s.source();
