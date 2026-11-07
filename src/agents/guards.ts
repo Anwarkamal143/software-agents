@@ -62,7 +62,7 @@ const DESTRUCTIVE: { test: (segment: string, line: string) => boolean; why: stri
 
 function checkCommand(command: string, ctx: GuardContext): { guard: GuardName; why: string } | null {
   if (SECRET_IN_COMMAND.test(command)) return { guard: "secret-file", why: "the command reads a .env file" };
-  if (HOME_CREDENTIALS.test(command) || command.includes(ctx.factoryHome) || (ctx.userHome && new RegExp(`${escape(ctx.userHome)}/${CREDENTIALS}`).test(command))) {
+  if (HOME_CREDENTIALS.test(command) || withoutWorkingCopy(command, ctx.workingCopy).includes(ctx.factoryHome) ||(ctx.userHome && new RegExp(`${escape(ctx.userHome)}/${CREDENTIALS}`).test(command))) {
     return { guard: "secret-file", why: "the command reaches a credential folder or the Factory home" };
   }
   if (CREDENTIAL_COMMANDS.test(command)) return { guard: "secret-file", why: "the command prints a stored credential" };
@@ -88,6 +88,21 @@ function dangerousRmTarget(segment: string): boolean {
 }
 
 const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * `command` with each mention of the Working copy, or of a path inside it, taken out: the Working
+ * copy lives in the Factory home, and naming it isn't reaching the rest. A mention that goes on
+ * into a sibling (`repo-other`) or climbs out (`repo/..`) is left in.
+ */
+function withoutWorkingCopy(command: string, workingCopy: string): string {
+  // The mention, then the rest of that path: everything up to a space, quote or shell operator.
+  const mention = new RegExp(String.raw`${escape(workingCopy)}([^\s'"\`;|&()<>]*)`, "g");
+  return command.replace(mention, (whole, rest: string) => {
+    const intoSibling = rest !== "" && !rest.startsWith("/");
+    const climbsOut = rest.split("/").includes("..");
+    return intoSibling || climbsOut ? whole : "";
+  });
+}
 
 /** Where `path` really lands: relative paths start in the Working copy, `~` is your home, and symlinks are followed. */
 function resolveIn(path: string, ctx: GuardContext): string {

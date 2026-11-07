@@ -12,7 +12,7 @@ const request = (instructions: string, tools: "read-only" | "write-branch" = "re
   brief: { stage: "review", instructions, tools } as AgentRunRequest["brief"],
   renderedBrief: "brief",
   model: "claude-sonnet-5-5",
-  workingCopy: { dir: "/w/repo", env: { HOME: "/w/home", XDG_CONFIG_HOME: "/w/home/.config", XDG_CACHE_HOME: "/w/cache", npm_config_cache: "/w/cache/npm", TMPDIR: "/w/tmp" } },
+  workingCopy: { dir: "/w/repo", env: { HOME: "/w/home", XDG_CONFIG_HOME: "/w/home/.config", XDG_CACHE_HOME: "/w/cache", npm_config_cache: "/w/cache/npm", TMPDIR: "/w/tmp" }, objects: "/factory/repos/acme/app.git/objects" },
   network: [],
   budget: { usd: 5, turns: 100, minutes: 30 },
   resultSchema: STAGE_RESULT_SCHEMA,

@@ -20,8 +20,12 @@ export interface AgentRunRequest {
   /** The Stage brief rendered as text for the session, issue text wrapped as untrusted. */
   renderedBrief: string;
   model: string;
-  /** Where the session runs and may write, and the environment it gets (its own HOME and caches). */
-  workingCopy: { dir: string; env: { HOME: string; XDG_CONFIG_HOME: string; XDG_CACHE_HOME: string; npm_config_cache: string; TMPDIR: string } };
+  /**
+   * Where the session runs and may write, and the environment it gets (its own HOME and caches).
+   * `objects` is the Trusted clone's object store, which the Working copy borrows through
+   * `--reference` (ADR 0008): its commands may read it, never write it.
+   */
+  workingCopy: { dir: string; env: { HOME: string; XDG_CONFIG_HOME: string; XDG_CACHE_HOME: string; npm_config_cache: string; TMPDIR: string }; objects: string };
   /** The only hosts the session's commands may reach: the repo's allowlist for a Stage that writes the branch, else none (ADR 0007). */
   network: string[];
   /** Hard limits for this Stage run. */

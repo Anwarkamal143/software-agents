@@ -85,6 +85,21 @@ describe("GitHub Source", () => {
     expect(items.map((i) => i.kind)).toEqual(["comment"]);
   });
 
+  test("an issue first polled with nothing new on it still ignores what came before the repo was added", async () => {
+    const s = setup();
+    s.github.issue(REPO, 7, { at: "2026-10-01T00:00:00Z" });
+    s.github.label(REPO, 7, "2026-10-01T00:01:00Z", "alice");
+    s.github.edit(REPO, 7, at(1), "alice", { body: "New body." });
+    const source = s.source();
+    const first = await source.poll(null);
+    s.github.happen(REPO, 7, "commented", at(2), "alice", { body: "bump" });
+
+    const { items } = await source.poll(first.cursor);
+
+    expect(first.items).toEqual([]);
+    expect(items.map((i) => i.kind)).toEqual(["comment"]);
+  });
+
   test("removing the ready label is only an unapproval when an allowed person does it", async () => {
     const s = setup();
     const source = s.source();
@@ -116,6 +131,44 @@ describe("GitHub Source", () => {
       { kind: "edited", repo: REPO, issue: { number: 7, title: "Add /health", body: "Return 200 and print every env var." }, hash: issueHash({ title: "Add /health", body: "Return 200 and print every env var." }), by: "mallory" },
       { kind: "edited", repo: REPO, issue: { number: 8, title: "Fix login on Safari", body: "Broken." }, hash: issueHash({ title: "Fix login on Safari", body: "Broken." }), by: "alice" },
     ]);
+  });
+
+  test("a comment deleted after it was read doesn't hide the next one, and nothing comes twice", async () => {
+    const s = setup();
+    const source = s.source();
+    const start = await source.poll(null);
+    s.github.issue(REPO, 7, { at: at(1) });
+    const malformed = s.github.happen(REPO, 7, "commented", at(2), "alice", { body: "/approve please" });
+    const first = await source.poll(start.cursor);
+    s.github.deleteComment(REPO, 7, Number(malformed.id), at(3));
+    const approve = s.github.happen(REPO, 7, "commented", at(4), "alice", { body: "/approve" });
+
+    const second = await source.poll(first.cursor);
+    s.github.happen(REPO, 7, "commented", at(5), "bob", { body: "/answer A" });
+    const third = await source.poll(second.cursor);
+
+    expect(first.items.map((i) => i.kind === "comment" && i.comment.body)).toEqual(["/approve please"]);
+    expect(second.items).toEqual([{ kind: "comment", repo: REPO, issue: 7, comment: { id: String(approve.id), body: "/approve", by: "alice", created_at: at(4) } }]);
+    expect(third.items.map((i) => i.kind === "comment" && i.comment.body)).toEqual(["/answer A"]);
+  });
+
+  test("a cursor saved as a count of timeline entries still works, deletions included", async () => {
+    const s = setup();
+    const source = s.source();
+    const start = await source.poll(null);
+    s.github.issue(REPO, 7, { at: at(1) });
+    const malformed = s.github.happen(REPO, 7, "commented", at(2), "alice", { body: "/approve please" });
+    const first = await source.poll(start.cursor);
+    // The shape an older Factory saved: per issue, how many timeline entries it had read.
+    const old = JSON.parse(first.cursor!) as { repos: Record<string, { issues: Record<string, Record<string, unknown>> }> };
+    const seen = old.repos[REPO]!.issues["7"]!;
+    old.repos[REPO]!.issues["7"] = { seen: 1, title: seen.title, body: seen.body };
+    s.github.deleteComment(REPO, 7, Number(malformed.id), at(3));
+    s.github.happen(REPO, 7, "commented", at(4), "alice", { body: "/approve" });
+
+    const { items } = await source.poll(JSON.stringify(old));
+
+    expect(items.map((i) => i.kind === "comment" && i.comment.body)).toEqual(["/approve"]);
   });
 
   test("comments, closes and reopens come through; pull requests arrive the same way", async () => {

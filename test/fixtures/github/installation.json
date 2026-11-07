@@ -6,7 +6,7 @@
   "app_id": 1001,
   "app_slug": "my-software-factory",
   "target_type": "Organization",
-  "permissions": { "contents": "write", "issues": "write", "pull_requests": "write", "checks": "read", "metadata": "read" },
+  "permissions": { "contents": "write", "issues": "write", "pull_requests": "write", "checks": "read", "statuses": "read", "metadata": "read" },
   "events": [],
   "created_at": "2026-10-01T00:00:00Z",
   "updated_at": "2026-10-01T00:00:00Z"

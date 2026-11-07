@@ -37,8 +37,8 @@ export interface DoctorDeps {
   baseline?: { clones: Clones; checks: CheckRunner };
 }
 
-/** The App's permissions on each installation (ADR 0011): contents, PRs and issues to write; checks and metadata to read. */
-export const APP_PERMISSIONS: Record<string, "read" | "write"> = { contents: "write", pull_requests: "write", issues: "write", checks: "read", metadata: "read" };
+/** The App's permissions on each installation (ADR 0011): contents, PRs and issues to write; checks, commit statuses (the Merge gate reads both) and metadata to read. */
+export const APP_PERMISSIONS: Record<string, "read" | "write"> = { contents: "write", pull_requests: "write", issues: "write", checks: "read", statuses: "read", metadata: "read" };
 
 /**
  * The self-checks (ADR 0011) that `factory doctor` prints and every `factory run` start requires:

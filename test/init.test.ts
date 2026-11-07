@@ -134,7 +134,7 @@ describe("the GitHub App manifest flow", () => {
     const manifest = JSON.parse(/name="manifest" value="([^"]+)"/.exec(page)![1]!.replaceAll("&quot;", '"').replaceAll("&lt;", "<").replaceAll("&amp;", "&")) as Record<string, unknown>;
     expect(manifest).toMatchObject({
       public: false,
-      default_permissions: { contents: "write", pull_requests: "write", issues: "write", checks: "read", metadata: "read" },
+      default_permissions: { contents: "write", pull_requests: "write", issues: "write", checks: "read", statuses: "read", metadata: "read" },
       default_events: [],
     });
     expect(manifest).not.toHaveProperty("hook_attributes");

@@ -60,7 +60,7 @@ describe("factory doctor", () => {
     const checks = await selfChecks(
       deps(home, {
         sandboxes: { agent: unavailableSandbox(), check: unavailableSandbox() },
-        fetch: appGitHub({ contents: "read", issues: "write", pull_requests: "write", checks: "read", metadata: "read" }),
+        fetch: appGitHub({ contents: "read", issues: "write", pull_requests: "write", checks: "read", statuses: "read", metadata: "read" }),
       }),
     );
 
@@ -81,6 +81,11 @@ describe("factory doctor", () => {
     const byName = Object.fromEntries(checks.map((c) => [c.name, c]));
     expect(byName.config).toMatchObject({ ok: false, fix: "Run `factory init`." });
     expect(byName.github).toMatchObject({ ok: false, fix: "Run `factory init` (or `factory init --token`)." });
+  });
+
+  test("an App that can't read commit statuses fails, since the Merge gate reads them alongside check runs", async () => {
+    const checks = await selfChecks(deps(healthyHome(), { fetch: appGitHub({ contents: "write", issues: "write", pull_requests: "write", checks: "read", metadata: "read" }) }));
+    expect(checks.find((c) => c.name === "github:acme/web-app")).toMatchObject({ ok: false, detail: "The installation on acme/web-app lacks statuses: read." });
   });
 
   test("the App not installed on a repo, and a personal token without write access, fail by repo", async () => {
