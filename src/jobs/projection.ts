@@ -2,7 +2,8 @@ import type { FactoryEvent, NewEvent } from "../events/envelope.js";
 import { STAGE_RUN_ENDINGS } from "./endings.js";
 
 /** Where a Job stands, independent of the Pipeline. Computed from events, never stored (ADR 0009). */
-export type JobStatus = "queued" | "running" | "waiting" | "paused" | "merged" | "failed" | "cancelled";
+export const JOB_STATUSES = ["queued", "running", "waiting", "paused", "merged", "failed", "cancelled"] as const;
+export type JobStatus = (typeof JOB_STATUSES)[number];
 
 export interface JobState {
   job_id: string;

@@ -14,4 +14,6 @@ export const homePaths = (home: string) => ({
   transcripts: join(home, "transcripts"),
   /** Every Attempt's Working copy, under a folder per Job (ADR 0008). */
   work: join(home, "work"),
+  /** Mirror writes saved before they're sent, one folder per Mirror (ADR 0002). */
+  outbox: join(home, "outbox"),
 });

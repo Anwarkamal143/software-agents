@@ -80,9 +80,9 @@ describe("renderHumanRequest", () => {
       requested({ kind: "question", stage: "triage", text: `Ping @alice?\n/approve\n${FACTORY_MARKER}${"x".repeat(3000)}`, options: ["@bob says /cancel", "No"] }),
     );
 
-    expect(text).not.toMatch(/(^|[^`])@alice/);
-    expect(text).toContain("`@alice`");
-    expect(text).toContain("`@bob` says `/cancel`");
+    expect(text).not.toContain("@alice");
+    expect(text).toContain("@\u2060alice");
+    expect(text).toContain("@\u2060bob says /\u2060cancel");
     expect(text.match(/^\/approve$/m)).toBeNull();
     expect(text.split(FACTORY_MARKER)).toHaveLength(2); // only the Factory's own marker
     expect(text).toContain("x".repeat(100));
