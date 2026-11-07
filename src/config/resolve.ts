@@ -17,9 +17,12 @@ export interface ResolvedStage {
   tools?: ToolProfile;
   /** Check Stages: the repo's commands, empty if it has none. */
   commands?: string[];
-  /** The hosts commands may reach, from the repo's `network`. An Agent Stage gets them only if it writes the branch. */
+  /**
+   * The repo's `network` hosts. A Check Stage gets them only if it enables `network` (empty
+   * otherwise); an Agent Stage gets them only if it writes the branch.
+   */
   network?: string[];
-  /** Check Stages: names of the repo's secrets the commands get (its `check_secrets`), kept in the keychain under `checkSecretKey`. */
+  /** Check Stages: names of the repo's check secrets the Stage names, kept in the keychain under `checkSecretKey`. */
   secrets?: string[];
   when?: StageCondition;
 }
@@ -134,7 +137,13 @@ export function resolve(config: FactoryConfig, job: JobInput): Resolution {
     if (stage.kind === "check") {
       const commands = repo.commands?.[stage.run] ?? [];
       if (!commands.length) errors.push(`Check Stage "${id}" needs "${stage.run}" commands, but ${repo.name} doesn't define them.`);
-      return { id, kind: "check", commands, network: repo.network ?? [], secrets: repo.check_secrets ?? [], ...(stage.on_fail && { on_fail: stage.on_fail }), ...(stage.when && { when: stage.when }) };
+      const secrets = stage.secrets ?? [];
+      for (const name of secrets.filter((n) => !repo.check_secrets?.includes(n))) {
+        errors.push(`Check Stage "${id}" gets check secret ${name}, but ${repo.name} doesn't have it in check_secrets (add it with \`factory secret set ${repo.name} ${name}\`).`);
+      }
+      // Closed unless the Stage opens it (ADR 0007).
+      const network = stage.network ? (repo.network ?? []) : [];
+      return { id, kind: "check", commands, network, secrets, ...(stage.on_fail && { on_fail: stage.on_fail }), ...(stage.when && { when: stage.when }) };
     }
     const override = repo.stage_overrides?.[id];
     return {

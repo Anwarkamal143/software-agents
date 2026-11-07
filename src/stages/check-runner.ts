@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { SandboxManager, type SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
 
@@ -143,14 +143,22 @@ export const srtSandbox: Sandbox = {
     if (!SandboxManager.isSupportedPlatform()) throw new SandboxUnavailable(`The Sandbox doesn't support ${process.platform}.`);
     const deps = await SandboxManager.checkDependenciesAsync();
     if (deps.errors.length) throw new SandboxUnavailable(`The Sandbox can't start: ${deps.errors.join("; ")}`);
-    initialized ??= SandboxManager.initialize(
-      // Every host is denied unless a command's own allowlist names it; no ask callback, so nothing is asked.
-      { network: { allowedDomains: [], deniedDomains: [] }, filesystem: { denyRead: [], allowWrite: [], denyWrite: [] } },
-      undefined,
-      true,
-    ).catch((err: unknown) => {
+    initialized ??= (async () => {
+      await SandboxManager.initialize(
+        // Every host is denied unless a command's own allowlist names it; no ask callback, so nothing is asked.
+        { network: { allowedDomains: [], deniedDomains: [] }, filesystem: { denyRead: [], allowWrite: [], denyWrite: [] } },
+        undefined,
+        true,
+      );
+      try {
+        await probe();
+      } catch (err) {
+        await SandboxManager.reset();
+        throw err;
+      }
+    })().catch((err: unknown) => {
       initialized = null;
-      throw new SandboxUnavailable(`The Sandbox can't start: ${String(err)}`);
+      throw err instanceof SandboxUnavailable ? err : new SandboxUnavailable(`The Sandbox can't start: ${String(err)}`);
     });
     await initialized;
   },
@@ -195,6 +203,29 @@ export const srtSandbox: Sandbox = {
     await SandboxManager.reset();
   },
 };
+
+/**
+ * Runs one command under the Sandbox. The dependency check only finds bubblewrap and socat; on a
+ * host that restricts unprivileged user namespaces (Ubuntu 24.04 and later, by AppArmor) bubblewrap
+ * is there but can't start, and every check would fail as if its command had. Only a real
+ * sandboxed command tells: if it can't run, the Sandbox is unavailable, not the check failed.
+ */
+async function probe(): Promise<void> {
+  const dir = realpathSync(tmpdir());
+  const wrapped = await srtSandbox.wrap("true", { readWrite: [dir], denyRead: [], denyReadPatterns: [], network: [] });
+  let result;
+  try {
+    result = await runOne(wrapped.command, dir, { PATH: process.env.PATH ?? "" }, PROBE_TIMEOUT_MS);
+  } finally {
+    void wrapped.finish();
+  }
+  if (result.code !== 0) {
+    const why = result.timedOut ? "it timed out" : `it exited ${result.code}${result.text.trim() ? `: ${result.text.trim()}` : ""}`;
+    throw new SandboxUnavailable(`The Sandbox can't run a command here (${why}).${process.platform === "linux" ? " Unprivileged user namespaces may be restricted (Ubuntu 24.04+): allow them for bwrap." : ""}`);
+  }
+}
+
+const PROBE_TIMEOUT_MS = 30_000;
 
 /**
  * On Linux the violation monitor reports write attempts outside the allow list it was given at

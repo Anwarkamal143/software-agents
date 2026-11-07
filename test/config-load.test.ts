@@ -55,8 +55,31 @@ describe("loadConfig", () => {
     ["literal-secret.yaml", "agent.api_key must be a reference like ${env:NAME} or keychain:NAME, never the secret itself."],
     ["literal-postgres-url.yaml", "state.postgres_url must be a reference like ${env:NAME} or keychain:NAME, never the secret itself."],
     ["bad-check-secret-name.yaml", 'repos.0.check_secrets.0 must match pattern "^[A-Za-z_][A-Za-z0-9_]*$".'],
+    [
+      "check-secret-shadows-env.yaml",
+      "Target repo acme/web-app: check secret HOME is named like one of the env vars the Factory sets for every check (PATH, HOME, XDG_CONFIG_HOME, XDG_CACHE_HOME, npm_config_cache, TMPDIR), so the command would never see it. Rename it.",
+    ],
   ])("refuses %s", (name, problem) => {
     expect(problems(`refused/${name}`)).toEqual([problem]);
+  });
+
+  test("a Check Stage may name check secrets and enable the network; one naming a secret a repo lacks is a warning", () => {
+    const text = fixture("minimal.yaml")
+      .replace("verify: { kind: check, run: verify }", "verify: { kind: check, run: verify, network: true, secrets: [STRIPE_KEY] }")
+      .replace('commands: { verify: ["npm test"] }', 'commands: { verify: ["npm test"] }\n    network: [registry.npmjs.org]');
+    const r = loadConfig(text);
+    expect(r).toMatchObject({ ok: true, config: { stages: { verify: { network: true, secrets: ["STRIPE_KEY"] } } } });
+    expect(r.warnings).toEqual(['Target repo acme/web-app can\'t run Pipeline "feature": Check Stage "verify" gets check secret STRIPE_KEY, which isn\'t in its check_secrets.']);
+  });
+
+  test("a check secret no Check Stage names is a warning: since #41 no check gets it", () => {
+    const r = loadConfig(fixture("minimal.yaml").replace('commands: { verify: ["npm test"] }', 'commands: { verify: ["npm test"] }\n    check_secrets: [STRIPE_KEY]'));
+    expect(r).toMatchObject({ ok: true, warnings: ["Target repo acme/web-app: no Check Stage names check secret STRIPE_KEY in its secrets, so no check gets it."] });
+  });
+
+  test("an Agent Stage can't name check secrets", () => {
+    const r = loadConfig(fixture("minimal.yaml").replace("tools: write-branch }", "tools: write-branch, secrets: [STRIPE_KEY] }"));
+    expect(r.ok ? [] : r.problems).toContain('stages.build: unknown setting "secrets".');
   });
 
   test("a schema mistake is reported with where it is", () => {

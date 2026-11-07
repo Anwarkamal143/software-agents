@@ -143,7 +143,7 @@ describe("Orchestrator: when GitHub refuses the Factory's credentials", () => {
 
   test("a later good poll doesn't lift a pause for some other Factory fault", async () => {
     const f = fakeFactory();
-    f.log.record({ type: "factory-paused", actor: "orchestrator", data: { reason: "sandbox-unavailable", message: "bubblewrap is not installed" } });
+    f.log.record({ type: "factory-paused", actor: "orchestrator", data: { reason: "check-secret-missing", message: "Check secret X isn't in the keychain" } });
     await f.orchestrator.runUntilIdle();
     expect(f.log.store.read().some((e) => e.type === "factory-resumed")).toBe(false);
   });

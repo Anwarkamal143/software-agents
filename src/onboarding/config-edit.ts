@@ -1,6 +1,6 @@
 import { isMap, isSeq, parseDocument, stringify } from "yaml";
-import { loadConfig } from "../config/load.js";
-import type { Pipeline, Stage, TargetRepo } from "../config/types.js";
+import { isCheckSecretName, loadConfig } from "../config/load.js";
+import type { FactoryConfig, Pipeline, Stage, TargetRepo } from "../config/types.js";
 import type { Proposal } from "./propose.js";
 
 /** The default Agent Stages around a repo's Check Stages (#34): triage and build before, review and security after. */
@@ -73,16 +73,43 @@ export function parseRepoEntry(text: string, name: string): { ok: true; entry: R
 /**
  * `factory.yaml` text with the repo added, comments and layout kept: the repo's entry, its
  * Pipeline, and a library Check Stage (`run: <name>`, Bouncing to build) for each Check Stage
- * it names that the library doesn't have yet. The result must pass `factory config check`.
+ * it names that the library doesn't have yet. Each of its Check Stages is opened to the repo's
+ * network if it has hosts, and names its check secrets (ADR 0007). Widening a Check Stage another
+ * repo shares, to its network or a secret it doesn't have, is refused. The result must pass `factory config check`.
  */
-export function addRepo(configText: string, entry: RepoEntry): { ok: true; text: string } | { ok: false; problems: string[] } {
+export function addRepo(configText: string, entry: RepoEntry): { ok: true; text: string; config: FactoryConfig } | { ok: false; problems: string[] } {
   const doc = parseDocument(configText);
+  const before = loadConfig(configText);
   const stages = doc.get("stages");
+  const network = (entry.repo.network?.length ?? 0) > 0;
+  // A bad name is reported once, on the repo, not again on every Stage.
+  const secrets = (entry.repo.check_secrets ?? []).filter(isCheckSecretName);
+  const problems: string[] = [];
   for (const id of entry.pipeline.stages) {
-    if (isMap(stages) && stages.has(id)) continue;
-    const stage: Stage = STARTER_STAGES[id]?.kind === "agent" ? STARTER_STAGES[id] : { kind: "check", run: id, on_fail: "build" };
-    doc.setIn(["stages", id], doc.createNode(stage, { flow: true }));
+    const existing = before.ok ? before.config.stages[id] : undefined;
+    if (!(isMap(stages) && stages.has(id))) {
+      const stage: Stage =
+        STARTER_STAGES[id]?.kind === "agent" ? STARTER_STAGES[id] : { kind: "check", run: id, on_fail: "build", ...(network && { network: true }), ...(secrets.length && { secrets }) };
+      doc.setIn(["stages", id], doc.createNode(stage, { flow: true }));
+      continue;
+    }
+    if (existing?.kind !== "check" || !before.ok) continue;
+    const own = `Give ${entry.repo.name} a Check Stage of its own: rename it in the pipeline and in commands.`;
+    if (network && !existing.network) {
+      // Opening it would open it for every repo that runs it, to that repo's own hosts.
+      const other = otherRepoRunning(before.config, id, (r) => (r.network?.length ?? 0) > 0);
+      if (other) problems.push(`${entry.repo.name} needs the network on Check Stage "${id}", which ${other} also runs with it closed. ${own}`);
+      doc.setIn(["stages", id, "network"], true);
+    }
+    const missing = secrets.filter((n) => !existing.secrets?.includes(n));
+    if (!missing.length) continue;
+    for (const name of missing) {
+      const other = otherRepoRunning(before.config, id, (r) => !r.check_secrets?.includes(name));
+      if (other) problems.push(`${entry.repo.name}'s check secret ${name} would go on Check Stage "${id}", which ${other} also runs without that secret. ${own}`);
+    }
+    doc.setIn(["stages", id, "secrets"], doc.createNode([...(existing.secrets ?? []), ...missing], { flow: true }));
   }
+  if (problems.length) return { ok: false, problems };
   doc.setIn(["pipelines", entry.repo.default_pipeline], doc.createNode(entry.pipeline, { flow: true }));
   const repos = doc.get("repos");
   if (isSeq(repos)) {
@@ -91,7 +118,13 @@ export function addRepo(configText: string, entry: RepoEntry): { ok: true; text:
   } else doc.set("repos", doc.createNode([entry.repo]));
   const text = doc.toString({ lineWidth: 0 });
   const loaded = loadConfig(text);
-  return loaded.ok ? { ok: true, text } : { ok: false, problems: loaded.problems };
+  return loaded.ok ? { ok: true, text, config: loaded.config } : { ok: false, problems: loaded.problems };
+}
+
+/** The first Target repo matching `which` that could run Stage `id`: any Pipeline has it, and a label may pick any Pipeline. */
+function otherRepoRunning(config: FactoryConfig, id: string, which: (repo: TargetRepo) => boolean): string | undefined {
+  const runsIt = Object.values(config.pipelines).some((p) => p.stages.includes(id));
+  return runsIt ? config.repos.find(which)?.name : undefined;
 }
 
 /** `factory.yaml` text with `name` among the repo's check secrets, added once. */

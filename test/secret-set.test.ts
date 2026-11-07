@@ -38,12 +38,31 @@ describe("factory secret set", () => {
     expect(s.out()).not.toContain("s3cret-0451");
   });
 
+  test("it says which Check Stages get it", async () => {
+    const s = setup();
+    writeFileSync(join(s.home, "factory.yaml"), TWO_REPOS.replace("verify: { kind: check, run: verify }", "verify: { kind: check, run: verify, secrets: [DATABASE_URL] }"));
+    await secretSet("acme/web-app", "DATABASE_URL", async () => "x", s.deps);
+    expect(s.out()).toBe('Stored DATABASE_URL in the keychain for acme/web-app. Check Stage "verify" gets it as $DATABASE_URL.\n');
+  });
+
   test("setting it again replaces the value and doesn't name it twice", async () => {
     const s = setup();
     await secretSet("acme/web-app", "DATABASE_URL", async () => "one", s.deps);
     await secretSet("acme/web-app", "DATABASE_URL", async () => "two", s.deps);
     expect(await s.secrets.get("check.acme.web-app.DATABASE_URL")).toBe("two");
     expect(loadConfig(readFileSync(join(s.home, "factory.yaml"), "utf8"))).toMatchObject({ ok: true, config: { repos: [{ check_secrets: ["DATABASE_URL"] }, {}] } });
+  });
+
+  test("a name the config check would refuse is refused before the value is read or stored", async () => {
+    const s = setup();
+    let read = false;
+    const value = async () => ((read = true), "/somewhere/else");
+
+    await expect(secretSet("acme/web-app", "HOME", value, s.deps)).rejects.toThrow(/would fail the config check, so nothing was stored:\n {2}- Target repo acme\/web-app: check secret HOME is named like/);
+
+    expect(read).toBe(false);
+    expect(await s.secrets.get("check.acme.web-app.HOME")).toBeNull();
+    expect(readFileSync(join(s.home, "factory.yaml"), "utf8")).toBe(TWO_REPOS);
   });
 
   test("each repo keeps its own value: one repo's secret never replaces another's, or the Factory's own credentials", async () => {

@@ -4,6 +4,7 @@ import { Ajv, type ErrorObject } from "ajv";
 import { parseDocument } from "yaml";
 import { pluginSkills, skillName } from "../agents/plugin.js";
 import { BUILT_IN_RISK_RULES, FACTORY_WIDE_POLICY_KEYS, flatten } from "./policies.js";
+import type { WorkingCopy } from "../repos/clones.js";
 import type { FactoryConfig } from "./types.js";
 
 const CONFIG_SCHEMA = JSON.parse(
@@ -46,6 +47,15 @@ function formatSchemaError(e: ErrorObject): string {
   if (e.keyword === "enum") return `${where} must be one of ${(e.params as { allowedValues: unknown[] }).allowedValues.join(", ")}.`;
   return `${where} ${e.message}.`;
 }
+
+/**
+ * The env vars every check command gets from the Factory: the Attempt's own folders, then PATH.
+ * They win over a check secret of the same name, which the command would then never see.
+ */
+const CHECK_ENV = ["PATH", "HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "npm_config_cache", "TMPDIR"] as const satisfies readonly ("PATH" | keyof WorkingCopy["env"])[];
+
+/** A check secret becomes an env var of the same name. */
+export const isCheckSecretName = (name: string) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name);
 
 const SECRET_REF = /^(\$\{env:[A-Za-z_][A-Za-z0-9_]*\}|keychain:[A-Za-z_][A-Za-z0-9_.-]*)$/;
 
@@ -105,6 +115,11 @@ function semanticProblems(config: FactoryConfig): string[] {
     problems.push(...factoryWideKeys(at, repo.policies));
     if (repo.agent?.auth !== undefined) problems.push(`${at} sets agent.auth (sign-in mode), which only Factory config may set.`);
     if (repo.state !== undefined) problems.push(`${at} sets state (Job store and Mirrors), which only Factory config may set.`);
+    for (const name of repo.check_secrets ?? []) {
+      if ((CHECK_ENV as readonly string[]).includes(name)) {
+        problems.push(`${at}: check secret ${name} is named like one of the env vars the Factory sets for every check (${CHECK_ENV.join(", ")}), so the command would never see it. Rename it.`);
+      }
+    }
     for (const off of repo.policies?.risk_rules_off ?? []) {
       if (!knownRules.has(off)) problems.push(`${at}: risk_rules_off names "${off}", which isn't a Factory Risk rule.`);
     }
@@ -132,15 +147,25 @@ function semanticProblems(config: FactoryConfig): string[] {
   return problems;
 }
 
-/** A Check Stage a repo could reach but has no commands for: a warning, and a question if a Job picks it. */
+/**
+ * A Check Stage a repo could reach but has no commands or secrets for: a warning, and a question
+ * if a Job picks it. And a check secret no Check Stage names, which no check gets.
+ */
 function unrunnableChecks(config: FactoryConfig): string[] {
   const warnings: string[] = [];
+  const named = new Set(Object.values(config.stages).flatMap((s) => (s.kind === "check" ? (s.secrets ?? []) : [])));
   for (const repo of config.repos) {
+    for (const secret of (repo.check_secrets ?? []).filter((s) => !named.has(s))) {
+      warnings.push(`Target repo ${repo.name}: no Check Stage names check secret ${secret} in its secrets, so no check gets it.`);
+    }
     for (const [name, pipeline] of Object.entries(config.pipelines)) {
       for (const id of pipeline.stages) {
         const stage = config.stages[id];
-        if (stage?.kind === "check" && !repo.commands?.[stage.run]?.length) {
-          warnings.push(`Target repo ${repo.name} can't run Pipeline "${name}": Check Stage "${id}" needs "${stage.run}" commands.`);
+        if (stage?.kind !== "check") continue;
+        const why = `Target repo ${repo.name} can't run Pipeline "${name}": Check Stage "${id}"`;
+        if (!repo.commands?.[stage.run]?.length) warnings.push(`${why} needs "${stage.run}" commands.`);
+        for (const secret of (stage.secrets ?? []).filter((s) => !repo.check_secrets?.includes(s))) {
+          warnings.push(`${why} gets check secret ${secret}, which isn't in its check_secrets.`);
         }
       }
     }

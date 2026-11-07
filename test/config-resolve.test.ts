@@ -134,3 +134,30 @@ describe("resolve: how a Target repo merges", () => {
     expect(resolve(config, job("acme/web-app")).mergeMethod).toBe("rebase");
   });
 });
+
+describe("resolve: what each Check Stage gets", () => {
+  /** draft.yaml's acme/web-app with two secrets, a network allowlist, and lint beside verify. */
+  function config() {
+    const c = draftConfig();
+    c.stages.lint = { kind: "check", run: "lint", network: true, secrets: ["NPM_TOKEN"] };
+    c.pipelines.feature!.stages.splice(3, 0, "lint");
+    const repo = c.repos[0]!;
+    repo.commands = { ...repo.commands, lint: ["pnpm lint"] };
+    repo.check_secrets = ["NPM_TOKEN", "STRIPE_KEY"];
+    repo.network = ["registry.npmjs.org"];
+    return c;
+  }
+
+  test("only the secrets it names, and the repo's network only if it enables it; by default neither", () => {
+    const stages = resolve(config(), job("acme/web-app")).stages;
+    expect(stages.find((s) => s.id === "verify")).toMatchObject({ secrets: [], network: [] });
+    expect(stages.find((s) => s.id === "lint")).toMatchObject({ secrets: ["NPM_TOKEN"], network: ["registry.npmjs.org"] });
+  });
+
+  test("a secret the repo doesn't have is a question, not a check run without it", () => {
+    const c = config();
+    c.repos[0]!.check_secrets = ["STRIPE_KEY"];
+    const r = resolve(c, job("acme/web-app"));
+    expect(r.errors).toEqual(['Check Stage "lint" gets check secret NPM_TOKEN, but acme/web-app doesn\'t have it in check_secrets (add it with `factory secret set acme/web-app NPM_TOKEN`).']);
+  });
+});
