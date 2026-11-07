@@ -24,6 +24,8 @@ export interface OnboardingIo {
   readStdin?: () => Promise<string>;
   /** One line of answer from you; null when there's no terminal to ask. */
   ask?: (question: string) => Promise<string | null>;
+  /** Like `ask`, without showing what you type: for a secret. */
+  askSecret?: (question: string) => Promise<string | null>;
   secrets?: WritableSecretStore;
   fetch?: Fetch;
   checks?: CheckRunner;
@@ -50,35 +52,44 @@ export async function initCommand(args: string[], io: OnboardingIo): Promise<num
 export async function repoCommand(args: string[], io: OnboardingIo): Promise<number> {
   const [sub, ...rest] = args;
   if (sub !== "add") {
-    io.stderr.write("Usage: factory repo add <owner/repo> [--yes] [--skip-baseline] [--backfill]\n");
+    io.stderr.write(REPO_ADD_USAGE);
     return 2;
   }
   const { values, positionals } = parseArgs({
     args: rest,
     allowPositionals: true,
-    options: { yes: { type: "boolean", short: "y", default: false }, "skip-baseline": { type: "boolean", default: false }, backfill: { type: "boolean", default: false } },
+    options: {
+      yes: { type: "boolean", short: "y", default: false },
+      "skip-baseline": { type: "boolean", default: false },
+      backfill: { type: "boolean", default: false },
+      secret: { type: "string", multiple: true, default: [] },
+    },
   });
   const [name] = positionals;
   if (!name) {
-    io.stderr.write("Usage: factory repo add <owner/repo> [--yes] [--skip-baseline] [--backfill]\n");
+    io.stderr.write(REPO_ADD_USAGE);
     return 2;
   }
   const secrets = io.secrets ?? new OsKeychain();
   const outcome = await repoAdd(
     name,
-    { skipBaseline: values["skip-baseline"], backfill: values.backfill },
+    { skipBaseline: values["skip-baseline"], backfill: values.backfill, secrets: values.secret },
     {
       home: io.home,
       clones: io.clones ?? new Clones(io.home, { remoteUrl: (repo) => `https://github.com/${repo}.git` }),
       checks: io.checks ?? new SandboxedCheckRunner({ factoryHome: io.home }),
       github: new GitHubClient({ auth: await githubAuthFromKeychain(secrets, io.fetch), ...(io.fetch && { fetch: io.fetch }) }),
       openStore: () => openSqliteJobStore(homePaths(io.home).jobStore),
+      secrets,
+      askSecret: (secret) => (io.askSecret ?? askHiddenInTerminal)(`Value for check secret ${secret} (not shown): `),
       confirm: (proposal, problems) => (values.yes && !problems.length ? Promise.resolve({ kind: "yes" }) : confirmInTerminal(proposal, problems, io)),
       out: (s) => io.stdout.write(s),
     },
   ).finally(() => srtSandbox.close());
   return outcome === "added" || outcome === "already-added" ? 0 : 1;
 }
+
+const REPO_ADD_USAGE = "Usage: factory repo add <owner/repo> [--secret <NAME>]... [--yes] [--skip-baseline] [--backfill]\n";
 
 export async function secretCommand(args: string[], io: OnboardingIo): Promise<number> {
   const [sub, repo, name] = args;
@@ -149,6 +160,40 @@ async function askInTerminal(question: string): Promise<string | null> {
     return await rl.question(question);
   } finally {
     rl.close();
+  }
+}
+
+/** Reads one line from the terminal without echoing it. Null when stdin isn't a terminal. */
+async function askHiddenInTerminal(question: string): Promise<string | null> {
+  const stdin = process.stdin;
+  if (!stdin.isTTY) return null;
+  process.stdout.write(question);
+  stdin.setRawMode(true);
+  stdin.setEncoding("utf8");
+  stdin.resume();
+  try {
+    return await new Promise<string>((resolve, reject) => {
+      let value = "";
+      const onData = (chunk: string) => {
+        for (const ch of chunk) {
+          if (ch === "\r" || ch === "\n") {
+            stdin.off("data", onData);
+            return resolve(value);
+          }
+          if (ch === "\u0003") {
+            stdin.off("data", onData);
+            return reject(new Error("Cancelled. Nothing written."));
+          }
+          if (ch === "\u007f" || ch === "\b") value = value.slice(0, -1);
+          else value += ch;
+        }
+      };
+      stdin.on("data", onData);
+    });
+  } finally {
+    stdin.setRawMode(false);
+    stdin.pause();
+    process.stdout.write("\n");
   }
 }
 

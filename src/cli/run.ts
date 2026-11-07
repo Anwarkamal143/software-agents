@@ -24,9 +24,10 @@ Setup:
   init [--token] [--org <org>]
                             Create the Factory home, its own GitHub App (or store a personal
                             token from stdin with --token), a starter factory.yaml and gitleaks
-  repo add <owner/repo> [--yes] [--skip-baseline] [--backfill]
+  repo add <owner/repo> [--secret <NAME>]... [--yes] [--skip-baseline] [--backfill]
                             Add a Target repo: propose its Check Stages and network allowlist,
-                            run the Baseline check, create its labels and write factory.yaml
+                            ask for its check secrets (not shown), run the Baseline check,
+                            create its labels and write factory.yaml
   secret set <owner/repo> <NAME>
                             Read a check secret from stdin into the keychain
   doctor [--baseline]       Run the self-checks (and with --baseline, each repo's Baseline check)

@@ -12,15 +12,18 @@ import { SandboxedCheckRunner } from "../src/stages/check-runner.js";
 import { openSqliteJobStore } from "../src/store/sqlite-job-store.js";
 import { FakeGitHub } from "./fakes/github.js";
 import { nodeRemote } from "./fixtures/node-repo.js";
+import { FakeSecrets } from "./fakes/secrets.js";
 import { tmpHome } from "./helpers/tmp.js";
 
 /** Commands that run offline, so the Baseline check here needs no registry. */
 const OFFLINE = (proposal: string) => proposal.replace(/- npm ci\n\s+- /g, "- ");
 
-function setup(opts: { failingTest?: boolean; answers?: ((proposal: string) => Confirmation)[] } = {}) {
+function setup(opts: { failingTest?: boolean; needsSecret?: string; answers?: ((proposal: string) => Confirmation)[]; secretValues?: Record<string, string | null> } = {}) {
   const home = tmpHome();
   writeFileSync(join(home, "factory.yaml"), starterConfig("alice"));
   const remote = nodeRemote(join(home, "github"), opts);
+  const secrets = new FakeSecrets();
+  const asked: string[] = [];
   const gh = new FakeGitHub();
   const proposals: string[] = [];
   const answers = [...(opts.answers ?? [(p: string) => ({ kind: "edited" as const, text: OFFLINE(p) })])];
@@ -35,12 +38,14 @@ function setup(opts: { failingTest?: boolean; answers?: ((proposal: string) => C
       proposals.push(proposal);
       return (answers.shift() ?? answers.at(-1) ?? (() => ({ kind: "no" as const })))(proposal);
     },
+    secrets,
+    askSecret: async (name: string) => (asked.push(name), opts.secretValues?.[name] ?? null),
     out: (s: string) => void (out += s),
     now: () => new Date("2026-11-07T10:00:00Z"),
   };
   const config = () => readFileSync(join(home, "factory.yaml"), "utf8");
   const cursor = () => (existsSync(join(home, "factory.db")) ? openSqliteJobStore(join(home, "factory.db")).cursor(SOURCE_CURSOR) : null);
-  return { home, gh, deps, proposals, config, cursor, out: () => out };
+  return { home, gh, deps, proposals, config, cursor, secrets, asked, out: () => out };
 }
 
 describe("factory repo add", () => {
@@ -152,5 +157,58 @@ describe("factory repo add", () => {
     expect(s.config()).toBe(once);
     expect(s.gh.repoLabels.get("acme/web-app")).toHaveLength(8);
     expect(s.proposals).toHaveLength(1);
+  });
+});
+
+describe("factory repo add: check secrets", () => {
+  const DB = "postgres://app:pw@db/app";
+
+  test("--secret names a check secret: asked for once confirmed, given to the Baseline check, stored only once it passes", async () => {
+    const s = setup({ needsSecret: DB, secretValues: { DATABASE_URL: DB } });
+
+    expect(await repoAdd("acme/web-app", { secrets: ["DATABASE_URL"] }, s.deps)).toBe("added");
+
+    expect(s.proposals[0]).toContain("  check_secrets:\n    - DATABASE_URL\n");
+    expect(s.asked).toEqual(["DATABASE_URL"]);
+    expect(await s.secrets.get("check.acme.web-app.DATABASE_URL")).toBe(DB);
+    expect(loadConfig(s.config())).toMatchObject({ ok: true, config: { repos: [{ name: "acme/web-app", check_secrets: ["DATABASE_URL"] }] } });
+    expect(s.config()).not.toContain("pw@db");
+    expect(s.out()).not.toContain("pw@db");
+  });
+
+  test("a check secret named by editing the proposal is asked for too", async () => {
+    const s = setup({
+      needsSecret: DB,
+      secretValues: { DATABASE_URL: DB },
+      answers: [(p) => ({ kind: "edited", text: OFFLINE(p).replace("  network:\n", "  check_secrets: [DATABASE_URL]\n  network:\n") })],
+    });
+    expect(await repoAdd("acme/web-app", {}, s.deps)).toBe("added");
+    expect(s.asked).toEqual(["DATABASE_URL"]);
+  });
+
+  test("without the secret's value the baseline is red, and a refused repo stores no secret", async () => {
+    const s = setup({ needsSecret: DB, secretValues: { DATABASE_URL: "postgres://wrong" } });
+
+    expect(await repoAdd("acme/web-app", { secrets: ["DATABASE_URL"] }, s.deps)).toBe("refused");
+
+    expect(await s.secrets.get("check.acme.web-app.DATABASE_URL")).toBeNull();
+    expect(s.gh.repoLabels.get("acme/web-app") ?? []).toEqual([]);
+  });
+
+  test("with no way to type a value, it stops before the Baseline check and writes nothing", async () => {
+    const s = setup({ needsSecret: DB });
+    const before = s.config();
+    await expect(repoAdd("acme/web-app", { secrets: ["DATABASE_URL"] }, s.deps)).rejects.toThrow(/DATABASE_URL/);
+    expect(s.config()).toBe(before);
+    expect(s.gh.repoLabels.get("acme/web-app") ?? []).toEqual([]);
+  });
+
+  test("a bad secret name is shown back with the proposal's problems", async () => {
+    const problems: string[][] = [];
+    const s = setup({ answers: [(p) => ({ kind: "edited", text: OFFLINE(p) }), () => ({ kind: "no" })] });
+    const confirm = s.deps.confirm;
+    s.deps.confirm = async (p, why) => (problems.push(why), confirm(p, why));
+    expect(await repoAdd("acme/web-app", { secrets: ["database-url"] }, s.deps)).toBe("declined");
+    expect(problems[1]).toEqual(['repos.0.check_secrets.0 must match pattern "^[A-Za-z_][A-Za-z0-9_]*$".']);
   });
 });

@@ -39,14 +39,14 @@ repos: []
 
 /** What `factory repo add` writes for one repo: its entry and the Pipeline it defaults to. */
 export interface RepoEntry {
-  repo: Pick<TargetRepo, "name" | "default_pipeline" | "commands" | "network">;
+  repo: Pick<TargetRepo, "name" | "default_pipeline" | "commands" | "network" | "check_secrets">;
   pipeline: Pipeline;
 }
 
-/** The entry a proposal becomes: a Pipeline of its own, named after the repo, running its Check Stages. */
-export function repoEntry(name: string, proposal: Proposal): RepoEntry {
+/** The entry a proposal becomes: a Pipeline of its own, named after the repo, running its Check Stages with `secrets`. */
+export function repoEntry(name: string, proposal: Proposal, secrets: string[] = []): RepoEntry {
   return {
-    repo: { name, default_pipeline: name, commands: proposal.checks, network: proposal.network },
+    repo: { name, default_pipeline: name, commands: proposal.checks, network: proposal.network, ...(secrets.length && { check_secrets: secrets }) },
     pipeline: { stages: [...BEFORE_CHECKS, ...Object.keys(proposal.checks), ...AFTER_CHECKS] },
   };
 }
