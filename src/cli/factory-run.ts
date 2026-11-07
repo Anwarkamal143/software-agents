@@ -8,6 +8,7 @@ import { homePaths } from "../home.js";
 import { housekeep } from "../housekeeping/housekeeping.js";
 import { OsNotifier } from "../humans/notify.js";
 import { EventLog } from "../jobs/event-log.js";
+import { GitHubMirror } from "../mirror/github.js";
 import { Orchestrator } from "../orchestrator/orchestrator.js";
 import { runFactory } from "../orchestrator/foreground.js";
 import { Clones } from "../repos/clones.js";
@@ -64,7 +65,7 @@ export async function factoryRun(home: string, signal: AbortSignal, report: (s: 
       source,
       agent,
       checks: new SandboxedCheckRunner({ factoryHome: home }),
-      mirrors: [],
+      mirrors: config.current.state.mirrors.includes("github") ? [new GitHubMirror({ client, dir: join(paths.outbox, "github") })] : [],
       artifacts,
       clones,
       prePush: new PrePushChecks(home, { gitleaks: GITLEAKS(home) }),

@@ -1,5 +1,6 @@
 import type { FactoryEvent } from "../events/envelope.js";
 import { ASK_CAUSES } from "../policies/merge-gate.js";
+import { cleanAgentText } from "../mirror/clean.js";
 import { FACTORY_MARKER, OPTION_LETTERS as LETTERS } from "./commands.js";
 const MAX_QUESTION = 2000;
 const MAX_OPTION = 500;
@@ -16,7 +17,7 @@ export function renderHumanRequest(event: FactoryEvent): string {
   const job = event.job_id!;
   const d = event.data;
   const stage = typeof d.stage === "string" ? d.stage : "the Stage";
-  const question = defuseAgentText(String(d.text ?? ""), MAX_QUESTION);
+  const question = cleanAgentText(String(d.text ?? ""), MAX_QUESTION);
   const lines = [FACTORY_MARKER, `<!-- factory:job=${job} request=${event.id} -->`];
 
   let options: string[];
@@ -26,7 +27,7 @@ export function renderHumanRequest(event: FactoryEvent): string {
     const given = ((d.options as string[] | undefined) ?? []).slice(0, LETTERS.length);
     lines.push(`**The Factory needs an answer** · Stage \`${stage}\` · Job \`${job}\``);
     options = [
-      ...given.map((o, i) => `- **${LETTERS[i]}.** ${defuseAgentText(o, MAX_OPTION)}: ${stage} carries on with this answer.`),
+      ...given.map((o, i) => `- **${LETTERS[i]}.** ${cleanAgentText(o, MAX_OPTION)}: ${stage} carries on with this answer.`),
       `- **other: <text>**: ${stage} carries on with your own answer.`,
     ];
     const answers = [...given.map((_, i) => LETTERS[i]!), "other: <text>"];
@@ -64,22 +65,25 @@ export function renderAlreadyAnswered(ignored: FactoryEvent): string {
   ].join("\n");
 }
 
+/** The reply a Mirror posts to a Reply command sent while the Job wasn't waiting (`reply-ignored` with why `not-waiting`). */
+export function renderNotWaiting(ignored: FactoryEvent): string {
+  return [FACTORY_MARKER, `This Job isn't waiting for an answer, so this reply changes nothing. See \`factory status\` for Job \`${ignored.job_id}\`.`, ""].join("\n");
+}
+
+/** The reminder a Mirror posts once a Human request has gone unanswered for three days. */
+export function renderReminder(reminded: FactoryEvent): string {
+  return [
+    FACTORY_MARKER,
+    `<!-- factory:job=${reminded.job_id} request=${String(reminded.data.request ?? "")} -->`,
+    `Job \`${reminded.job_id}\` is still waiting for an answer to the request above. Nothing happens until someone replies.`,
+    "",
+  ].join("\n");
+}
+
 function approveConsequence(cause: string, stage: string): string {
   if (MERGE_CAUSES.has(cause)) return "the Factory merges once the Merge gate's fixed core passes; /approve never overrides it.";
   if (cause === "reapproval") return "the edited issue counts as approved, and the Job carries on with it.";
   if (cause === "bounce-cap") return `${stage} Bounces once more, past the cap.`;
   if (cause === "repeated-root-cause") return `${stage} Bounces once more, despite the repeated root cause.`;
   return `${stage} runs again.`;
-}
-
-/**
- * Agent-written text the Factory posts: capped, with Factory markers defused and @mentions
- * and Reply commands set in code, so the post neither pings anyone nor reads as a command.
- */
-export function defuseAgentText(text: string, max: number): string {
-  const capped = text.length > max ? `${text.slice(0, max - 1)}…` : text;
-  return capped
-    .replaceAll("<!--", "&lt;!--")
-    .replace(/(^|[^\w`])@([A-Za-z0-9][A-Za-z0-9-]*)/g, "$1`@$2`")
-    .replace(/(^|[^\w/`])(\/(?:answer|approve|reject|cancel))\b/g, "$1`$2`");
 }

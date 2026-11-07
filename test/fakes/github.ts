@@ -31,6 +31,12 @@ export class FakeGitHub {
   /** Who GraphQL says last edited an issue body. */
   editor: string | null = null;
   permissions = new Map<string, string>([["alice", "write"], ["bob", "admin"]]);
+  /** Unreachable: every request fails as a network error would. */
+  down = false;
+  /** Every write is refused with a 403, as when the App lacks a permission. */
+  forbidden = false;
+  /** Comments on issues and PRs, keyed `repo#number`, oldest first. */
+  readonly comments = new Map<string, { id: number; body: string }[]>();
   private readonly issues = new Map<string, FakeIssue>();
   private readonly pulls = new Map<string, string>();
 
@@ -88,6 +94,7 @@ export class FakeGitHub {
   fetch: Fetch = async (url, init) => {
     const u = new URL(url);
     this.requests.push({ method: init.method, path: u.pathname + u.search, headers: init.headers });
+    if (this.down) throw new TypeError("fetch failed");
     if (this.failAfter !== null && this.requests.length > this.failAfter) return new Response("bad gateway", { status: 502 });
     if (this.failNext > 0) {
       this.failNext--;
@@ -98,6 +105,35 @@ export class FakeGitHub {
       return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "x-ratelimit-remaining": String(this.rateLimit), ...headers } });
     };
     let m: RegExpMatchArray | null;
+    const sent = init.body ? (JSON.parse(init.body) as Entry) : {};
+    if (this.forbidden && init.method !== "GET") return json({ message: "Resource not accessible by integration" }, {}, 403);
+    if ((m = u.pathname.match(/^\/repos\/([^/]+\/[^/]+)\/issues\/(\d+)\/comments$/))) {
+      const key = `${m[1]}#${m[2]}`;
+      const list = this.comments.get(key) ?? [];
+      if (init.method === "GET") return json(list);
+      const comment = { id: ids++, body: String(sent.body) };
+      this.comments.set(key, [...list, comment]);
+      return json(comment, {}, 201);
+    }
+    if ((m = u.pathname.match(/^\/repos\/([^/]+\/[^/]+)\/issues\/comments\/(\d+)$/)) && init.method === "PATCH") {
+      const comment = [...this.comments.values()].flat().find((c) => c.id === Number(m![2]));
+      if (!comment) return json({ message: "Not Found" }, {}, 404);
+      comment.body = String(sent.body);
+      return json(comment);
+    }
+    if ((m = u.pathname.match(/^\/repos\/([^/]+\/[^/]+)\/issues\/(\d+)\/labels(?:\/([^/]+))?$/))) {
+      const issue = this.issues.get(`${m[1]}#${m[2]}`)?.issue;
+      if (!issue) return json({ message: "Not Found" }, {}, 404);
+      let labels = issue.labels as { name: string }[];
+      if (init.method === "POST") labels = [...labels, ...(sent.labels as string[]).filter((n) => !labels.some((l) => l.name === n)).map((name) => ({ id: ids++, name, color: "ededed" }))];
+      if (init.method === "DELETE") {
+        const name = decodeURIComponent(m[3]!);
+        if (!labels.some((l) => l.name === name)) return json({ message: "Label does not exist" }, {}, 404);
+        labels = labels.filter((l) => l.name !== name);
+      }
+      issue.labels = labels;
+      return json(labels);
+    }
     if ((m = u.pathname.match(/^\/repos\/([^/]+\/[^/]+)\/issues$/))) {
       const repo = m[1]!;
       const since = u.searchParams.get("since") ?? "";
@@ -122,6 +158,10 @@ export class FakeGitHub {
     if (u.pathname === "/graphql") return json(recorded("graphql-editor", { data: { repository: { issueOrPullRequest: { editor: this.editor ? { login: this.editor } : null } } } }));
     return json({ message: "Not Found" }, {}, 404);
   };
+
+  labelNames(repo: string, number: number): string[] {
+    return (this.get(repo, number).issue.labels as { name: string }[]).map((l) => l.name);
+  }
 
   private get(repo: string, number: number): FakeIssue {
     const it = this.issues.get(`${repo}#${number}`);

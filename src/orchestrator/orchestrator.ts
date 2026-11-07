@@ -832,7 +832,7 @@ export class Orchestrator {
         try {
           await mirror.write({ event: recorded, job });
         } catch {
-          // The outbox that retries Mirror writes comes in #32.
+          // A Mirror saves to its outbox and delivers in the background; even that failing never blocks a Job.
         }
       }
     }
