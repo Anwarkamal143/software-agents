@@ -398,3 +398,53 @@ describe("GitHub Mirror", () => {
     expect(log.job("01JOB")!.status).toBe("queued");
   });
 });
+
+describe("GitHub Mirror: what a Job's ending says on GitHub", () => {
+  const opened = async (s: ReturnType<typeof setup>) => {
+    s.github.label(REPO, ISSUE, "2026-11-01T09:01:00Z", "alice");
+    await s.mirror.write(update("job-approved"));
+    await s.mirror.write(update("pr-opened", { status: "running", stage: "build" }, { number: 12 }));
+  };
+  /** The Mirror is read-only (ADR 0001): it never changes a PR, an issue's state or its ready label. */
+  const changedNothing = (s: ReturnType<typeof setup>) => {
+    expect(s.github.requests.filter((r) => (r.method === "PATCH" && !r.path.includes("/comments/")) || (r.method === "DELETE" && r.path.includes("factory%3Aready")) || r.path === "/graphql")).toEqual([]);
+    expect(s.github.prState.get(`${REPO}#12`)).toEqual({ state: "open", draft: false });
+    expect(s.github.labelNames(REPO, ISSUE)).toContain("factory:ready");
+  };
+
+  test("cancelled says so on the PR, and changes nothing else", async () => {
+    const s = setup();
+    await opened(s);
+    await s.mirror.write(update("job-cancelled", { status: "cancelled", reason: "cancelled by human:alice" }, { reason: "cancelled by human:alice" }));
+    await s.mirror.drain();
+
+    expect(s.comments(12).at(-1)).toContain("Job `01JOB` was cancelled, so the Factory closes this PR.");
+    changedNothing(s);
+  });
+
+  test("failed says on the issue how to retry", async () => {
+    const s = setup();
+    await opened(s);
+    await s.mirror.write(update("job-failed", { status: "failed", reason: "gave up" }, { reason: "gave up" }));
+    await s.mirror.drain();
+
+    const told = s.comments().find((b) => b.includes("Working copy are kept"))!;
+    expect(told).toContain("remove and re-apply `factory:ready`, or run `factory retry 01JOB`");
+    expect(told).toContain("kept for 7 days");
+    changedNothing(s);
+  });
+
+  test("a revert says why on the issue, and that re-labelling starts the next Job", async () => {
+    const s = setup();
+    await opened(s);
+    await s.mirror.write(update("pr-merged", { status: "merged" }, { number: 12, sha: "abc123" }));
+    await s.mirror.write(update("reverted", { status: "merged" }, { revert_pr: 13, merged: false, why: "CI on the default branch went red at abc123 after #12 merged." }));
+    await s.mirror.drain();
+
+    const told = s.comments().find((b) => b.includes("went red"))!;
+    expect(told).toContain("CI on the default branch went red at abc123 after #12 merged.");
+    expect(told).toContain("#13 reverts it and waits for you to merge it.");
+    expect(told).toContain("apply `factory:ready` again");
+    changedNothing(s);
+  });
+});

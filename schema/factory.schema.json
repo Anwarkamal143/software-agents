@@ -216,6 +216,11 @@
           "items": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" }
         },
         "max_running": { "type": "integer", "minimum": 1 },
+        "merge_method": {
+          "description": "How the Factory merges this repo's PRs.",
+          "enum": ["squash", "merge", "rebase"],
+          "default": "squash"
+        },
         "policies": { "$ref": "#/definitions/ownerPolicies" },
         "stage_overrides": {
           "description": "A repo may change only `model` and `instructions` of a library Stage.",

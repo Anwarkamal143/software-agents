@@ -1,6 +1,7 @@
 import type { FactoryEvent } from "../events/envelope.js";
 import { ASK_CAUSES } from "../policies/merge-gate.js";
 import { cleanAgentText } from "../mirror/clean.js";
+import { GIVE_UP_CAUSES } from "../jobs/endings.js";
 import { FACTORY_MARKER, OPTION_LETTERS as LETTERS } from "./commands.js";
 const MAX_QUESTION = 2000;
 const MAX_OPTION = 500;
@@ -40,7 +41,9 @@ export function renderHumanRequest(event: FactoryEvent): string {
     options = [
       `- **A.** \`/approve\`: ${approveConsequence(cause, stage)}`,
       `- **B.** \`/reject <reason>\`: the Job Bounces to ${rejectTo} with your reason as a finding.`,
-      "- **C.** `/cancel`: the Job is cancelled: its PR closed and its branches deleted.",
+      GIVE_UP_CAUSES.has(cause)
+        ? "- **C.** `/cancel`: the Job fails: its draft PR, branches and Working copy are kept for 7 days, and `factory retry` or re-labelling starts it again."
+        : "- **C.** `/cancel`: the Job is cancelled: its PR closed and its branches deleted.",
     ];
     replies = ["/approve", "/reject <reason>", "/cancel"];
     local = [`factory approve ${job}`, `factory reject ${job} <reason>`, `factory cancel ${job}`];

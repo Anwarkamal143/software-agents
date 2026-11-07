@@ -49,7 +49,8 @@ describe("GitHub Mirror: a whole Job", () => {
     expect(bodies.filter((b) => b.includes("already answered"))).toHaveLength(1);
     expect(github.labelNames(REPO, 7)).toEqual(["factory:ready", `factory:${job.status}`]);
     // Each comment was posted once; every later status change was an edit.
-    const posts = github.requests.filter((r) => r.method === "POST" && r.path.endsWith("/comments"));
+    // (The PR the Factory opened gets its own one-line link, on the PR.)
+    const posts = github.requests.filter((r) => r.method === "POST" && r.path === `/repos/${REPO}/issues/7/comments`);
     expect(posts).toHaveLength(bodies.length);
     expect(github.requests.filter((r) => r.method === "PATCH").length).toBeGreaterThan(0);
   });

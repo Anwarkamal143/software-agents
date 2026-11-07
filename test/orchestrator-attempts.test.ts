@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 import { runCli } from "../src/cli/run.js";
 import { approved, comment } from "./fakes/source.js";
 import { building, ScriptedAgent } from "./fakes/agent.js";
-import { fakeFactory } from "./helpers/factory.js";
+import { fakeFactory, expectAtMergeGate } from "./helpers/factory.js";
 import { agentGit } from "./helpers/git.js";
 
 async function cli(home: string, ...argv: string[]) {
@@ -40,7 +40,7 @@ describe("Orchestrator: only a human starts a new Attempt", () => {
     const second = f.agent.requests.filter((r) => r.brief.attempt === 2);
     expect(second.map((r) => r.brief.stage)).toEqual(["triage", "build", "review", "security"]);
     expect(second[0]!.brief.issue.body).toBe("Now with more detail.");
-    expect(events.at(-1)).toMatchObject({ type: "checkpoint-evaluated" });
+    expectAtMergeGate(events);
   });
 
   test("factory retry starts a failed Job's next Attempt", async () => {
@@ -52,7 +52,7 @@ describe("Orchestrator: only a human starts a new Attempt", () => {
     const retried = f.log.eventsFor(job_id).find((e) => e.type === "job-retried")!;
     expect(retried.actor).toBe("cli");
     expect(f.onlyJob()).toMatchObject({ attempt: 2 });
-    expect(f.log.eventsFor(job_id).at(-1)).toMatchObject({ type: "checkpoint-evaluated", attempt: 2 });
+    expectAtMergeGate(f.log.eventsFor(job_id), { attempt: 2 });
   });
 
   test("factory retry refuses a Job that hasn't failed or been cancelled", async () => {
@@ -79,7 +79,7 @@ describe("Orchestrator: only a human starts a new Attempt", () => {
 
     expect(f.log.jobs().map((j) => [j.job_id === first, j.status, j.attempt])).toEqual([
       [true, "merged", 1],
-      [false, "queued", 1],
+      [false, "waiting", 1],
     ]);
   });
 

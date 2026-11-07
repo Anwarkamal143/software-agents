@@ -125,3 +125,12 @@ describe("resolve: tighten-only fails closed", () => {
     expect(r.riskRules.map((x) => x.name)).toEqual(["auth", "migrations", "secrets", "ci-config"]);
   });
 });
+
+describe("resolve: how a Target repo merges", () => {
+  test("squash by default; a repo may choose merge or rebase", () => {
+    expect(resolve(draftConfig(), job("acme/web-app")).mergeMethod).toBe("squash");
+    const config = draftConfig();
+    config.repos[0]!.merge_method = "rebase";
+    expect(resolve(config, job("acme/web-app")).mergeMethod).toBe("rebase");
+  });
+});

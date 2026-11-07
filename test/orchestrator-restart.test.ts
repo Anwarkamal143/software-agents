@@ -6,7 +6,7 @@ import type { AgentRunOutcome, AgentRunRequest } from "../src/agents/adapter.js"
 import { acquireLock, LockHeld } from "../src/orchestrator/lock.js";
 import { approved, comment } from "./fakes/source.js";
 import { building, hangs, pass, ScriptedAgent } from "./fakes/agent.js";
-import { factoryAt, fakeFactory } from "./helpers/factory.js";
+import { factoryAt, fakeFactory, expectAtMergeGate } from "./helpers/factory.js";
 import { tmpHome } from "./helpers/tmp.js";
 
 const tick = (ms = 5) => new Promise((r) => setTimeout(r, ms));
@@ -45,7 +45,7 @@ describe("Orchestrator: restart", () => {
     expect(again.agent.stagesRun()).toEqual(["build", "review", "security"]);
     expect(again.agent.requests[0]!.resume?.session_id).toBe("s-build");
     expect(again.agent.requests[0]!.resume?.input).toMatch(/restarted/);
-    expect(events.at(-1)).toMatchObject({ type: "checkpoint-evaluated" });
+    expectAtMergeGate(events);
   });
 
   test("a Stage run whose session never reported an id reruns fresh after a restart", async () => {
@@ -79,7 +79,7 @@ describe("Orchestrator: restart", () => {
     await third.orchestrator.runUntilIdle();
 
     expect(third.agent.requests[0]!.resume).toBeUndefined();
-    expect(third.log.store.read().at(-1)).toMatchObject({ type: "checkpoint-evaluated" });
+    expectAtMergeGate(third.log.store.read());
   });
 
   test("a Stage run cut off while its Job waits for re-approval is interrupted too, and resumes once re-approved", async () => {

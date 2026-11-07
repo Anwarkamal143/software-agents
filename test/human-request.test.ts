@@ -62,9 +62,16 @@ describe("renderHumanRequest", () => {
     expect(text).toContain("review failed after 3 Bounces (cap 3).");
     expect(text).toContain("- **A.** `/approve`: review Bounces once more, past the cap.");
     expect(text).toContain("- **B.** `/reject <reason>`: the Job Bounces to build with your reason as a finding.");
-    expect(text).toContain("- **C.** `/cancel`: the Job is cancelled: its PR closed and its branches deleted.");
+    // The Factory gave up: cancelling now fails the Job, keeping its work to look at.
+    expect(text).toContain("- **C.** `/cancel`: the Job fails: its draft PR, branches and Working copy are kept for 7 days, and `factory retry` or re-labelling starts it again.");
     expect(text).toContain("```\n/approve\n/reject <reason>\n/cancel\n```");
     expect(text).toContain("```\nfactory approve 01JOB\nfactory reject 01JOB <reason>\nfactory cancel 01JOB\n```");
+  });
+
+  test("cancelling a request the Factory didn't give up on cancels the Job", () => {
+    expect(renderHumanRequest(requested({ kind: "approval", cause: "autonomy", stage: "security", text: "?" }))).toContain(
+      "- **C.** `/cancel`: the Job is cancelled: its PR closed and its branches deleted.",
+    );
   });
 
   test.each([

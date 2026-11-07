@@ -12,8 +12,8 @@ afterAll(() => srtSandbox.close());
 
 /** e2e.yaml whose verify prints which check secrets it can see. */
 const withSecrets = fixture("e2e.yaml").replace(
-  'commands: { verify: ["test -f built.txt"] }',
-  'commands: { verify: ["test -f built.txt", "echo \\"stripe=${STRIPE_KEY:-unset} other=${OTHER_KEY:-unset}\\""] }\n    check_secrets: [STRIPE_KEY]',
+  `commands: { verify: ['test -f "$PWD/built.txt"'] }`,
+  `commands: { verify: ['test -f "$PWD/built.txt"', "echo \\"stripe=\${STRIPE_KEY:-unset} other=\${OTHER_KEY:-unset}\\""] }\n    check_secrets: [STRIPE_KEY]`,
 );
 
 describe("Orchestrator: Check Stages under the Sandbox", () => {

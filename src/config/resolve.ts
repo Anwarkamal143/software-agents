@@ -1,5 +1,5 @@
 import { AT_LEAST_AS_STRICT, BUILT_IN_POLICIES, BUILT_IN_RISK_RULES, FACTORY_WIDE_POLICY_KEYS, flatten, unflatten } from "./policies.js";
-import type { FactoryConfig, OwnerPolicyPatch, Policies, RiskRule, StageCondition, ToolProfile } from "./types.js";
+import type { FactoryConfig, MergeMethod, OwnerPolicyPatch, Policies, RiskRule, StageCondition, ToolProfile } from "./types.js";
 
 export interface JobInput {
   /** `owner/repo` */
@@ -45,6 +45,8 @@ export interface Resolution {
   riskRules: (RiskRule & { layer: string })[];
   /** The Target repo's cap on concurrent Stage runs. */
   maxRunning: number;
+  /** How the Factory merges the Target repo's PRs. */
+  mergeMethod: MergeMethod;
 }
 
 interface Layer {
@@ -74,6 +76,7 @@ export function resolve(config: FactoryConfig, job: JobInput): Resolution {
     refused: [],
     riskRules: [],
     maxRunning: 0,
+    mergeMethod: "squash",
   });
 
   const repo = config.repos.find((r) => r.name === job.repo);
@@ -156,5 +159,6 @@ export function resolve(config: FactoryConfig, job: JobInput): Resolution {
     refused,
     riskRules,
     maxRunning: repo.max_running ?? 2,
+    mergeMethod: repo.merge_method ?? "squash",
   };
 }

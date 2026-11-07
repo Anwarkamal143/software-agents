@@ -47,6 +47,8 @@ export class FakeGitHub {
   readonly comments = new Map<string, FakeComment[]>();
   private readonly issues = new Map<string, FakeIssue>();
   private readonly pulls = new Map<string, string>();
+  /** Each PR's state and draft flag. */
+  readonly prState = new Map<string, { state: "open" | "closed"; draft: boolean }>();
 
   issue(repo: string, number: number, over: { title?: string; body?: string; labels?: string[]; pr?: { branch: string }; at?: string } = {}): this {
     const at = over.at ?? "2026-11-01T09:00:00Z";
@@ -60,7 +62,10 @@ export class FakeGitHub {
       ...(over.pr && { pull_request: { url: `https://api.github.com/repos/${repo}/pulls/${number}`, merged_at: null } }),
     });
     this.issues.set(`${repo}#${number}`, { issue, timeline: [] });
-    if (over.pr) this.pulls.set(`${repo}#${number}`, over.pr.branch);
+    if (over.pr) {
+      this.pulls.set(`${repo}#${number}`, over.pr.branch);
+      this.prState.set(`${repo}#${number}`, { state: "open", draft: false });
+    }
     return this;
   }
 
@@ -158,8 +163,11 @@ export class FakeGitHub {
     }
     if ((m = u.pathname.match(/^\/repos\/([^/]+\/[^/]+)\/issues\/(\d+)\/timeline$/))) return json(this.get(m[1]!, Number(m[2])).timeline);
     if ((m = u.pathname.match(/^\/repos\/([^/]+\/[^/]+)\/pulls\/(\d+)$/))) {
-      const branch = this.pulls.get(`${m[1]}#${m[2]}`)!;
-      return json(recorded("pull", { number: Number(m[2]), head: { label: `acme:${branch}`, ref: branch, sha: "6dcb09b5" } }));
+      const key = `${m[1]}#${m[2]}`;
+      const branch = this.pulls.get(key);
+      if (!branch) return json({ message: "Not Found" }, {}, 404);
+      const state = this.prState.get(key)!;
+      return json(recorded("pull", { number: Number(m[2]), node_id: `PR_${m[2]}`, ...state, head: { label: `acme:${branch}`, ref: branch, sha: "6dcb09b5" } }));
     }
     if ((m = u.pathname.match(/^\/repos\/([^/]+\/[^/]+)\/collaborators\/([^/]+)\/permission$/))) {
       const permission = this.permissions.get(decodeURIComponent(m[2]!));

@@ -4,6 +4,7 @@ import { ClaudeAdapter, FACTORY_PLUGIN_DIR } from "../agents/claude.js";
 import { ConfigHolder } from "../config/holder.js";
 import { githubAuthFromKeychain, GITHUB_SECRETS } from "../github/auth.js";
 import { GitHubClient } from "../github/client.js";
+import { GitHubPullRequests } from "../github/pulls.js";
 import { homePaths } from "../home.js";
 import { housekeep } from "../housekeeping/housekeeping.js";
 import { OsNotifier } from "../humans/notify.js";
@@ -34,9 +35,10 @@ export async function factoryRun(home: string, signal: AbortSignal, report: (s: 
   try {
     const log = new EventLog(store);
     const client = new GitHubClient({ auth: await githubAuthFromKeychain(secrets) });
+    const readyLabel = () => config.current.sources[0]?.ready_label ?? "factory:ready";
     const source = new GitHubSource({
       client,
-      config: () => ({ repos: config.current.repos.map((r) => r.name), humans: config.current.humans, readyLabel: config.current.sources[0]?.ready_label ?? "factory:ready" }),
+      config: () => ({ repos: config.current.repos.map((r) => r.name), humans: config.current.humans, readyLabel: readyLabel() }),
     });
     const apiKey = () => credential(config.current.agent.api_key, secrets);
     const agent = new ClaudeAdapter({
@@ -65,7 +67,8 @@ export async function factoryRun(home: string, signal: AbortSignal, report: (s: 
       source,
       agent,
       checks: new SandboxedCheckRunner({ factoryHome: home }),
-      mirrors: config.current.state.mirrors.includes("github") ? [new GitHubMirror({ client, dir: join(paths.outbox, "github"), onDropped: recordDropped(log) })] : [],
+      mirrors: config.current.state.mirrors.includes("github") ? [new GitHubMirror({ client, dir: join(paths.outbox, "github"), readyLabel, onDropped: recordDropped(log) })] : [],
+      pulls: new GitHubPullRequests(client),
       artifacts,
       clones,
       prePush: new PrePushChecks(home, { gitleaks: GITLEAKS(home) }),

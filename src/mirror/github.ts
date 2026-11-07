@@ -1,10 +1,12 @@
 import { join } from "node:path";
 import { GitHubError, type GitHubClient } from "../github/client.js";
+import { FACTORY_MARKER } from "../humans/commands.js";
 import { renderAlreadyAnswered, renderHumanRequest, renderNotWaiting, renderReminder } from "../humans/request.js";
 import type { EventLog } from "../jobs/event-log.js";
 import type { JobState } from "../jobs/projection.js";
 import type { Mirror, MirrorUpdate } from "./mirror.js";
 import { Outbox, readJson, writeAtomic, type OutboxEntry } from "./outbox.js";
+import { cleanAgentText } from "./clean.js";
 import { renderPrLink, renderStatusComment, STATUS_LABELS, statusLabel, statusMarker } from "./status.js";
 
 export interface GitHubMirrorOptions {
@@ -15,6 +17,8 @@ export interface GitHubMirrorOptions {
   schedule?: (run: () => void, ms: number) => void;
   /** Milliseconds since the epoch; backoff is timed from it. */
   now?: () => number;
+  /** The label that approves a Job, named in what an ending tells you to do next. Read at each delivery. */
+  readyLabel?: () => string;
   /** Told about each write dropped after GitHub kept refusing it, so it can be recorded. */
   onDropped?: (update: MirrorUpdate, why: string) => void;
 }
@@ -40,7 +44,7 @@ const REFUSED = new Set([400, 404, 410, 422]);
 
 /** One comment an event asks for, beyond the status label and comment. */
 interface Post {
-  part: "request" | "reminder" | "reply" | "pr-link";
+  part: "request" | "reminder" | "reply" | "pr-link" | "ending";
   /** The issue or PR it goes on. */
   number: number;
   body: string;
@@ -154,7 +158,7 @@ export class GitHubMirror implements Mirror {
       this.written(job.job_id).pr = { number: event.data.number };
       this.saveState();
     }
-    for (const post of posts(entry.item)) {
+    for (const post of [...posts(entry.item), ...this.endingPosts(entry.item)]) {
       if (entry.done.includes(post.part)) continue;
       // Posted already, by a process that died before it could note so: find it rather than post another.
       const marker = `<!-- factory:post=${event.id}/${post.part} -->`;
@@ -166,6 +170,37 @@ export class GitHubMirror implements Mirror {
     const changed = this.written(job.job_id).body !== status;
     await this.ensureLabel(job, changed);
     await this.ensureStatusComment(job, status);
+  }
+
+  /**
+   * The comment a Job's ending posts: on its PR when cancelled, or on the issue. The Orchestrator
+   * makes the ending itself show on GitHub (closing or drafting the PR, the ready label, reopening);
+   * the Mirror only says why (ADR 0001).
+   */
+  private endingPosts({ event, job }: MirrorUpdate): Post[] {
+    const pr = this.written(job.job_id).pr?.number;
+    const id = job.job_id;
+    switch (event.type) {
+      case "job-cancelled":
+        return pr ? [{ part: "ending", number: pr, body: `${FACTORY_MARKER} Job \`${id}\` was cancelled, so the Factory closes this PR.` }] : [];
+      case "job-failed": {
+        const why = typeof event.data.reason === "string" ? `: ${cleanAgentText(event.data.reason, 300)}` : "";
+        const body = [FACTORY_MARKER, `Job \`${id}\` failed${why}.`, "", `Its draft PR, branches and Working copy are kept for 7 days. To try again, remove and re-apply \`${this.readyLabel()}\`, or run \`factory retry ${id}\`.`, ""];
+        return [{ part: "ending", number: job.issue, body: body.join("\n") }];
+      }
+      case "reverted": {
+        const revert = typeof event.data.revert_pr === "number" ? `#${event.data.revert_pr}` : "A revert PR";
+        const how = event.data.merged === true ? "reverts it and is merged." : "reverts it and waits for you to merge it.";
+        const body = [FACTORY_MARKER, `${String(event.data.why ?? "CI on the default branch went red after the merge.")} ${revert} ${how}`, "", `No new Job starts on its own: apply \`${this.readyLabel()}\` again to try again.`, ""];
+        return [{ part: "ending", number: job.issue, body: body.join("\n") }];
+      }
+      default:
+        return [];
+    }
+  }
+
+  private readyLabel(): string {
+    return this.options.readyLabel?.() ?? "factory:ready";
   }
 
   /** Posts a comment, and learns from GitHub's answer who the Factory comments as. */

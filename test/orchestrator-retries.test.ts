@@ -1,8 +1,10 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import type { AgentRunOutcome } from "../src/agents/adapter.js";
 import { approved, comment } from "./fakes/source.js";
 import { building, errored, facts, pass, ScriptedAgent } from "./fakes/agent.js";
-import { fakeFactory } from "./helpers/factory.js";
+import { fakeFactory, expectAtMergeGate } from "./helpers/factory.js";
 
 /** A Stage result that doesn't fit the schema. */
 const invalid = (summary = "LGTM"): AgentRunOutcome => ({ kind: "output", output: { verdict: "pass", summary }, facts: facts(), session_id: "session-bad" });
@@ -38,7 +40,7 @@ describe("Orchestrator: Run errors are retried by reason (ADR 0010)", () => {
     expect(correction.brief.stage).toBe("triage");
     expect(correction.resume?.session_id).toBe("session-bad");
     expect(correction.resume?.input).toContain("result must have required property 'findings'");
-    expect(f.log.store.read().at(-1)).toMatchObject({ type: "checkpoint-evaluated" });
+    expectAtMergeGate(f.log.store.read());
   });
 
   test("a timeout starts a fresh session", async () => {
@@ -49,7 +51,7 @@ describe("Orchestrator: Run errors are retried by reason (ADR 0010)", () => {
 
     expect(f.agent.requests[1]!.brief.stage).toBe("triage");
     expect(f.agent.requests[1]!.resume).toBeUndefined();
-    expect(f.log.store.read().at(-1)).toMatchObject({ type: "checkpoint-evaluated" });
+    expectAtMergeGate(f.log.store.read());
   });
 
   test("a budget Run error is never retried", async () => {
@@ -103,7 +105,7 @@ describe("Orchestrator: Run errors are retried by reason (ADR 0010)", () => {
     expect(f.onlyJob()).toMatchObject({ status: "waiting", reason: "retries-exhausted" });
   });
 
-  test("/cancel after retries run out cancels the Job", async () => {
+  test("/cancel after retries run out fails the Job, keeping its work to look at", async () => {
     const f = fakeFactory(new ScriptedAgent({ triage: [errored("timeout", "a"), errored("timeout", "b"), errored("timeout", "c")] }));
     f.source.push(approved(7));
     await f.orchestrator.runUntilIdle();
@@ -111,6 +113,7 @@ describe("Orchestrator: Run errors are retried by reason (ADR 0010)", () => {
     f.source.push(comment(7, "/cancel"));
     await f.orchestrator.runUntilIdle();
 
-    expect(f.onlyJob()).toMatchObject({ status: "cancelled" });
+    expect(f.onlyJob()).toMatchObject({ status: "failed" });
+    expect(existsSync(join(f.home, "work", f.onlyJob().job_id))).toBe(true);
   });
 });

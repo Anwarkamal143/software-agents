@@ -19,8 +19,9 @@ function deferred() {
   return { gate, release };
 }
 
+/** Polls for up to 30s: in a full parallel run, starting a Job's first Stage run can take seconds. */
 const until = async (cond: () => boolean) => {
-  for (let i = 0; i < 400 && !cond(); i++) await new Promise((r) => setTimeout(r, 10));
+  for (let i = 0; i < 3000 && !cond(); i++) await new Promise((r) => setTimeout(r, 10));
   if (!cond()) throw new Error("condition never held");
 };
 
@@ -86,7 +87,7 @@ describe("Orchestrator with Trusted clones and Working copies", () => {
 
     await f.orchestrator.runUntilIdle();
 
-    expect(f.log.store.read().find((e) => e.type === "stage-failed")).toMatchObject({ data: { stage: "verify", summary: "`test -f built.txt` exited 1." } });
+    expect(f.log.store.read().find((e) => e.type === "stage-failed")).toMatchObject({ data: { stage: "verify", summary: '`test -f "$PWD/built.txt"` exited 1.' } });
   });
 
   test("with max_running: 1, a second Job waits in the queue until the first Stage run ends", async () => {
