@@ -6,6 +6,12 @@ import { openSqliteJobStore } from "../src/store/sqlite-job-store.js";
 import { fixture } from "./helpers/config.js";
 import { STATUS_FIXTURES } from "./fixtures/logs.js";
 import { tmpHome } from "./helpers/tmp.js";
+import { starterConfig } from "../src/onboarding/config-edit.js";
+import { Clones } from "../src/repos/clones.js";
+import { FakeGitHub } from "./fakes/github.js";
+import { unavailableSandbox } from "./fakes/sandbox.js";
+import { FakeSecrets } from "./fakes/secrets.js";
+import { makeRemote } from "./helpers/git.js";
 
 async function cli(home: string, ...argv: string[]) {
   let stdout = "";
@@ -155,4 +161,45 @@ test("an unknown command prints usage and exits 2", async () => {
   const { code, stderr } = await cli(tmpHome(), "frobnicate");
   expect(code).toBe(2);
   expect(stderr).toMatch(/^Usage: factory <command>/);
+});
+
+describe("factory onboarding commands", () => {
+  const run = async (home: string, argv: string[], over: Partial<Parameters<typeof runCli>[1]> = {}) => {
+    let stdout = "";
+    let stderr = "";
+    const code = await runCli(argv, { home, stdout: { write: (s: string) => void (stdout += s) }, stderr: { write: (s: string) => void (stderr += s) }, ...over });
+    return { code, stdout, stderr };
+  };
+
+  test("secret set reads the value from stdin, never from its arguments", async () => {
+    const home = tmpHome();
+    writeFileSync(join(home, "factory.yaml"), fixture("minimal.yaml"));
+    const secrets = new FakeSecrets();
+
+    const r = await run(home, ["secret", "set", "acme/web-app", "DATABASE_URL"], { secrets, readStdin: async () => "postgres://x\n" });
+
+    expect(r).toMatchObject({ code: 0, stdout: "Stored DATABASE_URL in the keychain. acme/web-app's Check Stages get it as $DATABASE_URL.\n" });
+    expect(await secrets.get("check.acme.web-app.DATABASE_URL")).toBe("postgres://x");
+    expect((await run(home, ["secret", "set", "acme/web-app"])).code).toBe(2);
+  });
+
+  test("doctor exits 1 and names each failing check with its fix", async () => {
+    const r = await run(tmpHome(), ["doctor"], { secrets: new FakeSecrets(), doctor: { sandboxes: { agent: unavailableSandbox(), check: unavailableSandbox() } } });
+    expect(r.code).toBe(1);
+    expect(r.stdout).toMatch(/^FAIL {2}config: No config at .*\n {6}fix: Run `factory init`\.\n/m);
+    expect(r.stdout).toMatch(/^FAIL {2}agent-sandbox: bubblewrap is not installed\n {6}fix: /m);
+    expect(r.stdout).toMatch(/failed\.\n$/);
+  });
+
+  test("repo add with no terminal to confirm in asks for --yes", async () => {
+    const home = tmpHome();
+    writeFileSync(join(home, "factory.yaml"), starterConfig("alice"));
+    const r = await run(home, ["repo", "add", "acme/web-app"], {
+      secrets: new FakeSecrets({ GITHUB_TOKEN: "ghp_x" }),
+      fetch: new FakeGitHub().fetch,
+      clones: new Clones(home, { remoteUrl: () => makeRemote(join(home, "github")) }),
+      ask: async () => null,
+    });
+    expect(r).toMatchObject({ code: 1, stderr: "No terminal to confirm the proposal in: run with --yes to accept it as proposed.\n" });
+  });
 });

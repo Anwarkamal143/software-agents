@@ -79,7 +79,7 @@ export interface TargetRepo {
   commands?: Record<string, string[]>;
   /** Domains this repo's Check Stages, and Tool profiles that enable network, may reach from the Sandbox. */
   network?: string[];
-  /** Keychain names of check secrets, set with `factory secret set`. Each Check Stage gets them as env vars of the same name. */
+  /** Names of this repo's check secrets, set with `factory secret set` and kept in the keychain per repo. Each Check Stage gets them as env vars of the same name. */
   check_secrets?: string[];
   max_running?: number;
   /** How the Factory merges this repo's PRs. Default squash. */

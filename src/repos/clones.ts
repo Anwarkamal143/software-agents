@@ -330,6 +330,42 @@ export class Clones {
     });
   }
 
+  /** The default branch's head as the remote has it now, fetched into the Trusted clone. */
+  async defaultHead(repo: string): Promise<string> {
+    const trusted = await this.trustedClone(repo);
+    return this.exclusive(trusted.dir, async () => {
+      await this.git.run(["fetch", "--quiet", "--prune", "--no-tags", "origin"], { cwd: trusted.dir });
+      return (await this.git.run(["rev-parse", `refs/remotes/origin/${trusted.defaultBranch}^{commit}`], { cwd: trusted.dir })).trim();
+    });
+  }
+
+  /** A file at `commit`, read from the Trusted clone; null if there is none. */
+  async readFile(repo: string, commit: string, path: string): Promise<string | null> {
+    const { dir } = await this.trustedClone(repo);
+    if (!(await this.git.test(["cat-file", "-e", `${commit}:${path}`], { cwd: dir }))) return null;
+    return this.git.run(["show", `${commit}:${path}`], { cwd: dir });
+  }
+
+  /**
+   * A clean checkout of `commit` for the Baseline check, with its own HOME, caches and temp folder
+   * like an Attempt's. Delete it with `removeBaselineCopy`.
+   */
+  async baselineCopy(repo: string, commit: string): Promise<{ dir: string; root: string; env: WorkingCopy["env"] }> {
+    const { dir: trusted } = await this.trustedClone(repo);
+    const root = join(this.home, "work", "baseline", repo.replace("/", "__"));
+    rmSync(root, { recursive: true, force: true });
+    const env = { HOME: join(root, "home"), XDG_CONFIG_HOME: join(root, "home", ".config"), XDG_CACHE_HOME: join(root, "cache"), npm_config_cache: join(root, "cache", "npm"), TMPDIR: join(root, "tmp") };
+    for (const d of Object.values(env)) mkdirSync(d, { recursive: true });
+    const dir = join(root, "repo");
+    await this.git.run(["clone", "--quiet", "--no-checkout", "--reference", trusted, "--no-tags", "--template=", trusted, dir], { cwd: root });
+    await this.git.run(["checkout", "--quiet", "--detach", commit], { cwd: dir });
+    return { dir, root, env };
+  }
+
+  removeBaselineCopy(root: string): void {
+    rmSync(root, { recursive: true, force: true });
+  }
+
   /** Deletes every Working copy of a Job: on merged or cancelled (ADR 0008). */
   async removeJob(job_id: string): Promise<void> {
     rmSync(join(this.home, "work", job_id), { recursive: true, force: true });

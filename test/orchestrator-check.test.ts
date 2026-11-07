@@ -17,8 +17,9 @@ const withSecrets = fixture("e2e.yaml").replace(
 );
 
 describe("Orchestrator: Check Stages under the Sandbox", () => {
-  test("a Check Stage gets only its configured secrets, and its Evidence names the head commit and output artifact", async () => {
-    const secrets = new FakeSecrets({ STRIPE_KEY: "sk_test_only", OTHER_KEY: "never-configured" });
+  test("a Check Stage gets only its own repo's configured secrets, and its Evidence names the head commit and output artifact", async () => {
+    // Another repo's STRIPE_KEY, and one stored without a repo, are never this repo's.
+    const secrets = new FakeSecrets({ "check.acme.web-app.STRIPE_KEY": "sk_test_only", "check.acme.other.STRIPE_KEY": "other-repos", STRIPE_KEY: "no-repo", OTHER_KEY: "never-configured" });
     const f = fakeFactory(new ScriptedAgent({ build: [building] }), withSecrets, { secrets });
     f.source.push(approved(7));
 
@@ -31,7 +32,7 @@ describe("Orchestrator: Check Stages under the Sandbox", () => {
     const output = f.artifacts.get(String(evidence.data.sha256)).toString();
 
     expect(output).toContain("stripe=sk_test_only other=unset");
-    expect(secrets.read).toEqual(["STRIPE_KEY"]);
+    expect(secrets.read).toEqual(["check.acme.web-app.STRIPE_KEY"]);
     expect(evidence).toMatchObject({
       actor: "orchestrator",
       stage_run_id: passed.stage_run_id,
@@ -81,7 +82,7 @@ describe("Orchestrator: Check Stages under the Sandbox", () => {
     await f.orchestrator.runUntilIdle();
 
     expect(f.log.store.read().find((e) => e.type === "factory-paused")).toMatchObject({
-      data: { reason: "check-secret-missing", message: expect.stringContaining("STRIPE_KEY") },
+      data: { reason: "check-secret-missing", message: "Check secret STRIPE_KEY isn't in the keychain for acme/web-app (set it with `factory secret set acme/web-app STRIPE_KEY`)." },
     });
     expect(f.onlyJob()).toMatchObject({ status: "paused", stage: "verify", reason: "factory-paused" });
   });

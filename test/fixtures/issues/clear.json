@@ -1,0 +1,5 @@
+{
+  "number": 42,
+  "title": "Add itemCount(items) to src/cart.js",
+  "body": "Add an exported `itemCount(items)` function to `src/cart.js` that returns the total quantity across all items (the sum of each item's `qty`). An empty cart has 0 items. Add a test next to the existing ones in `test/cart.test.js`."
+}

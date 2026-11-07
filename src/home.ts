@@ -16,4 +16,6 @@ export const homePaths = (home: string) => ({
   work: join(home, "work"),
   /** Mirror writes saved before they're sent, one folder per Mirror (ADR 0002). */
   outbox: join(home, "outbox"),
+  /** The pinned gitleaks `factory init` installs; Pre-push checks run it (ADR 0011). */
+  gitleaks: join(home, "tools", "gitleaks"),
 });

@@ -47,6 +47,8 @@ export class FakeGitHub {
   readonly comments = new Map<string, FakeComment[]>();
   private readonly issues = new Map<string, FakeIssue>();
   private readonly pulls = new Map<string, string>();
+  /** Each repo's labels, by repo. */
+  readonly repoLabels = new Map<string, { name: string; color: string; description?: string }[]>();
   /** Each PR's state and draft flag. */
   readonly prState = new Map<string, { state: "open" | "closed"; draft: boolean }>();
 
@@ -135,6 +137,15 @@ export class FakeGitHub {
       if (!comment) return json({ message: "Not Found" }, {}, 404);
       comment.body = String(sent.body);
       return json(comment);
+    }
+    if ((m = u.pathname.match(/^\/repos\/([^/]+\/[^/]+)\/labels$/))) {
+      const list = this.repoLabels.get(m[1]!) ?? [];
+      this.repoLabels.set(m[1]!, list);
+      if (init.method === "GET") return json(list);
+      if (list.some((l) => l.name.toLowerCase() === String(sent.name).toLowerCase())) return json({ message: "Validation Failed", errors: [{ code: "already_exists" }] }, {}, 422);
+      const label = { name: String(sent.name), color: String(sent.color), description: String(sent.description ?? "") };
+      list.push(label);
+      return json(label, {}, 201);
     }
     if ((m = u.pathname.match(/^\/repos\/([^/]+\/[^/]+)\/issues\/(\d+)\/labels(?:\/([^/]+))?$/))) {
       const issue = this.issues.get(`${m[1]}#${m[2]}`)?.issue;

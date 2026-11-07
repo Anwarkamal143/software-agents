@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { Ajv, type ErrorObject } from "ajv";
 import { parseDocument } from "yaml";
+import { pluginSkills, skillName } from "../agents/plugin.js";
 import { BUILT_IN_RISK_RULES, FACTORY_WIDE_POLICY_KEYS, flatten } from "./policies.js";
 import type { FactoryConfig } from "./types.js";
 
@@ -55,8 +56,20 @@ function factoryWideKeys(at: string, patch: object | undefined): string[] {
     .map((key) => `${at} sets ${key}, which only Factory config may set.`);
 }
 
+/** Null if `ref` names a skill the Factory plugin has, else why not. */
+function unknownInstructions(ref: string, skills: string[]): string | null {
+  const name = skillName(ref);
+  return name && skills.includes(name) ? null : `the Factory plugin has no instructions ${ref}.`;
+}
+
 function semanticProblems(config: FactoryConfig): string[] {
   const problems: string[] = [];
+  const skills = pluginSkills();
+
+  for (const [id, stage] of Object.entries(config.stages)) {
+    const unknown = stage.kind === "agent" ? unknownInstructions(stage.instructions, skills) : null;
+    if (unknown) problems.push(`Stage "${id}": ${unknown}`);
+  }
 
   for (const [name, pipeline] of Object.entries(config.pipelines)) {
     const ids = pipeline.stages;
@@ -98,6 +111,9 @@ function semanticProblems(config: FactoryConfig): string[] {
     for (const id of Object.keys(repo.stage_overrides ?? {})) {
       if (!config.stages[id]) problems.push(`${at}: stage_overrides names Stage "${id}", which isn't defined.`);
       else if (config.stages[id].kind !== "agent") problems.push(`${at}: stage_overrides on Check Stage "${id}"; only Agent Stages have a model and instructions.`);
+      const ref = repo.stage_overrides?.[id]?.instructions;
+      const unknown = ref === undefined ? null : unknownInstructions(ref, skills);
+      if (unknown) problems.push(`${at}: stage_overrides.${id}: ${unknown}`);
     }
   }
 

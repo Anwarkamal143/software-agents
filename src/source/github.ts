@@ -187,6 +187,20 @@ export class GitHubSource implements Source {
 
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 
+/**
+ * The Source cursor with `repo` starting from `from` (ADR 0011): timeline entries before it are
+ * never acted on. `factory repo add` passes when it added the repo, or the epoch with `--backfill`,
+ * which also picks up issues already labelled ready. A repo the cursor already has is left alone.
+ */
+export function seedRepoCursor(cursorText: string | null, repo: string, from: Date): string {
+  const cursor = parseCursor(cursorText);
+  if (!cursor.repos[repo]) {
+    const at = from.toISOString();
+    cursor.repos[repo] = { added: at, since: at, issues: {} };
+  }
+  return JSON.stringify(cursor);
+}
+
 function parseCursor(text: string | null): Cursor {
   if (!text) return { v: 1, repos: {} };
   try {
