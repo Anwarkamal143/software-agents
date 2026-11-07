@@ -8,6 +8,15 @@ import { approved } from "./fakes/source.js";
 import { fixture } from "./helpers/config.js";
 import { fakeFactory } from "./helpers/factory.js";
 
+/** A clock the test moves by hand. */
+class Clock {
+  private t = Date.parse("2026-11-07T10:00:00Z");
+  now = () => new Date(this.t);
+  advance(ms: number) {
+    this.t += ms;
+  }
+}
+
 afterAll(() => srtSandbox.close());
 
 const SHOW_SECRETS = `"echo \\"stripe=\${STRIPE_KEY:-unset} other=\${OTHER_KEY:-unset}\\""`;
@@ -121,12 +130,17 @@ describe("Orchestrator: the Sandbox self-check (ADR 0007)", () => {
 
   test("once the Sandbox is available, the self-check lifts its pause and the Jobs go on; it isn't asked again", async () => {
     const sandbox = switchableSandbox(false);
-    const f = fakeFactory(new ScriptedAgent({ triage: [pass("ok")], build: [building] }), fixture("e2e.yaml"), { agentSandbox: sandbox });
+    const clock = new Clock();
+    const f = fakeFactory(new ScriptedAgent({ triage: [pass("ok")], build: [building] }), fixture("e2e.yaml"), { agentSandbox: sandbox, now: clock.now });
     f.source.push(approved(7));
     await f.orchestrator.runUntilIdle();
     expect(f.onlyJob()).toMatchObject({ status: "paused", reason: "factory-paused" });
 
     sandbox.available = true;
+    // Asked again at most every 5 minutes while paused.
+    await f.orchestrator.runUntilIdle();
+    expect(f.onlyJob()).toMatchObject({ status: "paused" });
+    clock.advance(5 * 60_000);
     await f.orchestrator.runUntilIdle();
 
     const events = f.log.store.read();
@@ -136,6 +150,29 @@ describe("Orchestrator: the Sandbox self-check (ADR 0007)", () => {
     const calls = sandbox.readyCalls;
     await f.orchestrator.runUntilIdle();
     expect(sandbox.readyCalls).toBe(calls);
+  });
+
+  test("a Sandbox lost mid-run is asked about again: once it's back the Job carries on, without a restart", async () => {
+    const clock = new Clock();
+    const runner = switchableSandbox(true);
+    const real = srtSandbox;
+    // The Sandbox commands run under: real while available, lost for one Check Stage run.
+    const flaky = { ready: () => runner.ready(), wrap: real.wrap, close: async () => {} };
+    const f = fakeFactory(new ScriptedAgent({ build: [building] }), fixture("e2e.yaml"), { sandbox: flaky, checkSandboxSelfCheck: runner, now: clock.now });
+    f.source.push(approved(7));
+    await f.orchestrator.start();
+    runner.available = false;
+    await f.orchestrator.runUntilIdle();
+    expect(f.onlyJob()).toMatchObject({ status: "paused", stage: "verify", reason: "factory-paused" });
+
+    runner.available = true;
+    clock.advance(5 * 60_000);
+    await f.orchestrator.runUntilIdle();
+
+    const events = f.log.store.read();
+    expect(events.filter((e) => e.type === "factory-paused").map((e) => e.data.reason)).toEqual(["sandbox-unavailable"]);
+    expect(events.some((e) => e.type === "factory-resumed")).toBe(true);
+    expect(events.some((e) => e.type === "stage-passed" && e.data.stage === "verify")).toBe(true);
   });
 
   test("the self-check lifts only its own kind of pause", async () => {

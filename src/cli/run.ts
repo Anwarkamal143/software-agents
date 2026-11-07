@@ -104,8 +104,7 @@ function status(io: CliIo): number {
   for (const event of store?.read() ?? []) projection.apply(event);
   store?.close();
   const jobs: JobState[] = projection.all();
-  const pause = projection.pause();
-  if (pause) io.stdout.write(`${describePause(pause)}\n`);
+  for (const pause of projection.pauses()) io.stdout.write(`${describePause(pause)}\n`);
   if (!jobs.length) {
     io.stdout.write("No Jobs yet.\n");
     return 0;

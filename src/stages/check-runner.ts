@@ -96,6 +96,9 @@ export class SandboxedCheckRunner implements CheckRunner {
     const policy: SandboxPolicy = {
       readWrite,
       denyRead: [real(this.factoryHome), ...HOME_CREDENTIALS.map((p) => join(real(this.userHome), p))],
+      // On Linux bubblewrap expands the pattern as each command is wrapped, so it denies every
+      // `.env*` on disk by then, the copy's and earlier commands' alike. One a command writes and
+      // reads itself stays readable to it: it holds nothing that command couldn't already read.
       denyReadPatterns: readWrite.map((d) => `${d}/**/.env*`),
       network,
     };

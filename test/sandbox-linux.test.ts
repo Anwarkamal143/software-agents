@@ -17,7 +17,8 @@ afterAll(() => srtSandbox.close());
  */
 describe.runIf(process.platform === "linux")("the real Sandbox on Linux", () => {
   test("with bubblewrap missing, the Factory pauses before any Stage run, and goes on once it's back", async () => {
-    const f = fakeFactory(new ScriptedAgent({ build: [building] }));
+    let t = Date.parse("2026-11-07T10:00:00Z");
+    const f = fakeFactory(new ScriptedAgent({ build: [building] }), undefined, { now: () => new Date(t) });
     // A PATH with `which` and nothing else, so bubblewrap can't be found.
     const bin = join(tmpHome(), "bin");
     mkdirSync(bin);
@@ -32,6 +33,8 @@ describe.runIf(process.platform === "linux")("the real Sandbox on Linux", () => 
     expect(f.log.factoryPause()).toMatchObject({ type: "factory-paused", data: { reason: "sandbox-unavailable", message: expect.stringContaining("bubblewrap (bwrap) not installed") } });
 
     f.source.push(approved(7));
+    // A pause for the Sandbox is looked at again every 5 minutes.
+    t += 5 * 60_000;
     await f.orchestrator.runUntilIdle();
     expect(f.log.store.read().some((e) => e.type === "factory-resumed")).toBe(true);
     expect(f.agent.stagesRun()).toContain("build");

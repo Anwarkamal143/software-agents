@@ -129,8 +129,10 @@ export class Orchestrator {
   private readonly mergeLocks = new Map<string, Promise<unknown>>();
   /** Jobs whose merge GitHub refused in this pass: the gate re-runs, but merges again only next pass. */
   private refusedThisPass = new Set<string>();
-  /** Both Sandboxes reported available: the self-check passed, and isn't run again by this Orchestrator. */
+  /** Both Sandboxes reported available, and no Stage run has found one gone since: the self-check isn't due. */
   private sandboxesChecked = false;
+  /** When the self-check last ran (ms), so a pause for the Sandbox is looked at again only every so often. */
+  private sandboxCheckedAt: number | null = null;
 
   constructor(private readonly deps: OrchestratorDeps) {
     this.sessions = new SessionWatch({
@@ -160,9 +162,8 @@ export class Orchestrator {
     };
     try {
       await this.poll();
-      // While the self-check's own pause parks every Job, only this asks again whether the Sandboxes
-      // are back. A Sandbox lost mid-run, after the self-check passed, stays paused until a restart.
-      if (this.pausedFor(SANDBOX_UNAVAILABLE)) await this.selfCheckSandboxes();
+      // While its pause parks every Job, only this asks again whether the Sandboxes are back.
+      if (this.pausedFor(SANDBOX_UNAVAILABLE) && this.sandboxRecheckDue()) await this.selfCheckSandboxes();
       await this.remind();
       await this.watchMerges();
       await this.showEndings();
@@ -256,12 +257,13 @@ export class Orchestrator {
   /**
    * The Sandbox self-check (ADR 0007): true once both Sandboxes report available, which lifts a
    * `sandbox-unavailable` pause. Otherwise the Factory pauses (once), and no Stage run starts.
-   * After it has passed it isn't asked again: a Sandbox lost later pauses the Factory from the
-   * Stage run that finds it, until the next start.
+   * Once passed it isn't asked again until a Stage run finds a Sandbox gone, which pauses the
+   * Factory and makes it due again.
    */
   private async selfCheckSandboxes(): Promise<boolean> {
     if (this.sandboxesChecked) return true;
     const ownPause = this.pausedFor(SANDBOX_UNAVAILABLE);
+    this.sandboxCheckedAt = this.now().getTime();
     try {
       await this.deps.sandboxes.agent.ready();
       await this.deps.sandboxes.check.ready();
@@ -275,16 +277,29 @@ export class Orchestrator {
     return true;
   }
 
-  /** The `factory-paused` event in effect, if its reason is `reason`. */
+  /**
+   * While paused for the Sandbox, it is asked again at most every `SANDBOX_RECHECK_MS`: one that
+   * reports available but fails each Stage run (the agent SDK's own sandbox can only be asked by
+   * starting a session) costs one Stage run per interval, not a loop.
+   */
+  private sandboxRecheckDue(): boolean {
+    return this.sandboxCheckedAt === null || this.now().getTime() - this.sandboxCheckedAt >= SANDBOX_RECHECK_MS;
+  }
+
+  /** The `factory-paused` event in effect for `reason`, if any. */
   private pausedFor(reason: string): FactoryEvent | null {
-    const pause = this.deps.log.factoryPause();
-    return pause?.type === "factory-paused" && pause.data.reason === reason ? pause : null;
+    return this.deps.log.factoryPauses().find((p) => p.type === "factory-paused" && p.data.reason === reason) ?? null;
+  }
+
+  /** The plan-limit pause in effect, if any. */
+  private planLimitPause(): FactoryEvent | null {
+    return this.deps.log.factoryPauses().find((p) => p.type === "plan-limit-hit") ?? null;
   }
 
   /** A plan limit parks the Factory until its reset time (ADR 0010); then Jobs carry on. */
   private async releasePlanLimit(): Promise<void> {
-    const pause = this.deps.log.factoryPause();
-    if (pause?.type !== "plan-limit-hit") return;
+    const pause = this.planLimitPause();
+    if (!pause) return;
     const resetsAt = typeof pause.data.resets_at === "string" ? Date.parse(pause.data.resets_at) : Date.parse(pause.at) + PLAN_LIMIT_FALLBACK_MS;
     if (this.now().getTime() < resetsAt) return;
     await this.record({ type: "plan-limit-reset", actor: "orchestrator", caused_by: pause.id });
@@ -292,7 +307,7 @@ export class Orchestrator {
 
   /** When the plan limit is reached, or past 90% of it, no new Stage run starts until it resets. */
   private async planLimitHit(info: RateLimitInfo, caused_by: string | null | undefined): Promise<void> {
-    if (this.deps.log.factoryPause()?.type === "plan-limit-hit") return;
+    if (this.planLimitPause()) return;
     await this.record({
       type: "plan-limit-hit",
       actor: "orchestrator",
@@ -942,6 +957,11 @@ export class Orchestrator {
 
   /** A Factory fault: pause the whole Factory, then end the Stage run, so the Job parks until it resumes. */
   private async fault(stage: ResolvedStage, fault: Extract<StageOutcome, { kind: "fault" }>, run: RunEnvelope): Promise<void> {
+    if (fault.reason === SANDBOX_UNAVAILABLE) {
+      // The self-check is due again, from now: the pause lifts once both Sandboxes are back.
+      this.sandboxesChecked = false;
+      this.sandboxCheckedAt = this.now().getTime();
+    }
     const paused = await this.record({ type: "factory-paused", actor: "orchestrator", caused_by: run.caused_by, data: { reason: fault.reason, message: fault.message } });
     await this.record({ ...run, actor: "orchestrator", caused_by: paused.id, type: "stage-interrupted", data: { stage: stage.id, reason: fault.reason } });
   }
@@ -1222,6 +1242,9 @@ export class Orchestrator {
 
 /** The `factory-paused` reason while either Sandbox can't confine commands. */
 const SANDBOX_UNAVAILABLE = "sandbox-unavailable" as const;
+
+/** How often a pause for the Sandbox is looked at again. */
+const SANDBOX_RECHECK_MS = 5 * 60_000;
 
 /** The `factory-paused` reason while the Source refuses the Factory's credentials. */
 const SOURCE_CREDENTIALS = "source-credentials";

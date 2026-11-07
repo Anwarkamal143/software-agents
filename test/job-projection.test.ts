@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { join } from "node:path";
-import { computeJobs } from "../src/jobs/projection.js";
+import { computeJobs, JobProjection } from "../src/jobs/projection.js";
 import { openSqliteJobStore } from "../src/store/sqlite-job-store.js";
 import { STATUS_FIXTURES } from "./fixtures/logs.js";
 import { tmpHome } from "./helpers/tmp.js";
@@ -34,5 +34,30 @@ describe("Job projection", () => {
       ["job-r", "running", null],
       ["job-w", "waiting", "question"],
     ]);
+  });
+
+  test("pauses for different reasons overlap: lifting one leaves the Factory paused for the other", () => {
+    const store = openSqliteJobStore(join(tmpHome(), "factory.db"));
+    for (const event of STATUS_FIXTURES.queued.log) store.append(event);
+    const sandbox = store.append({ type: "factory-paused", actor: "orchestrator", data: { reason: "sandbox-unavailable", message: "bubblewrap is not installed" } });
+    const source = store.append({ type: "factory-paused", actor: "orchestrator", data: { reason: "source-credentials", message: "GitHub refused" } });
+    const project = () => {
+      const projection = new JobProjection();
+      for (const e of store.read()) projection.apply(e);
+      return projection;
+    };
+    expect(project().pauses().map((p) => p.data.reason)).toEqual(["sandbox-unavailable", "source-credentials"]);
+
+    store.append({ type: "factory-resumed", actor: "orchestrator", caused_by: source.id });
+    expect(project().pauses().map((p) => p.id)).toEqual([sandbox.id]);
+    expect(project().get("job-q")).toMatchObject({ status: "paused", reason: "factory-paused" });
+
+    store.append({ type: "plan-limit-hit", actor: "orchestrator", data: {} });
+    store.append({ type: "factory-resumed", actor: "orchestrator", caused_by: sandbox.id });
+    expect(project().get("job-q")).toMatchObject({ status: "paused", reason: "plan-limit" });
+
+    store.append({ type: "plan-limit-reset", actor: "orchestrator" });
+    expect(project().pauses()).toEqual([]);
+    expect(project().get("job-q")).toMatchObject({ status: "queued", reason: null, resumed: true });
   });
 });

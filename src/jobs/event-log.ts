@@ -56,10 +56,16 @@ export class EventLog {
     return this.projection.get(job_id);
   }
 
-  /** The Factory-wide pause in effect, if any: a `plan-limit-hit` or `factory-paused` event. */
+  /** The latest Factory-wide pause in effect, if any: a `plan-limit-hit` or `factory-paused` event. */
   factoryPause(): FactoryEvent | null {
     this.catchUp();
     return this.projection.pause();
+  }
+
+  /** Every Factory-wide pause in effect, oldest first: they overlap, and each is lifted on its own. */
+  factoryPauses(): FactoryEvent[] {
+    this.catchUp();
+    return this.projection.pauses();
   }
 
   jobs(): JobState[] {
