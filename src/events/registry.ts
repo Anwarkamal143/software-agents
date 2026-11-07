@@ -76,10 +76,19 @@ export const V1_EVENTS: EventRegistry = {
   // or as a retry (`retry_of`).
   "stage-resumed": { version: 3, data: obj(stage, { session_id: str, answer: str, retry_of: str, config_hash: str }), upgrades: { 1: sameData, 2: sameData } },
   // A Bounce a human asked for carries `answer` (the human-answered event); a `/reject` also carries its reason as `finding`.
+  // A Bounce from the Merge gate (`from: merge-gate`, a rebase conflict) carries its own `summary` and `findings`.
   bounced: {
-    version: 2,
-    data: obj({ from: str, to: str, bounce: { type: "integer", minimum: 1 } }, { answer: str, finding: obj({ severity: str, message: str, root_cause: str }) }),
-    upgrades: { 1: sameData },
+    version: 3,
+    data: obj(
+      { from: str, to: str, bounce: { type: "integer", minimum: 1 } },
+      {
+        answer: str,
+        finding: obj({ severity: str, message: str, root_cause: str }),
+        summary: str,
+        findings: { type: "array", items: obj({ severity: str, message: str, root_cause: str }, { file: str }) },
+      },
+    ),
+    upgrades: { 1: sameData, 2: sameData },
   },
   // Evidence and Guards
   // The Orchestrator's own proof about `head`, such as a passing Check Stage's output. Only a pass is Evidence.
@@ -127,16 +136,19 @@ export const V1_EVENTS: EventRegistry = {
   "mirror-write-dropped": { version: 1, data: obj({ mirror: str, event_type: str, why: str }) },
   // Merging
   "pr-opened": { version: 1, data: obj({ number: { type: "integer", minimum: 1 } }, { url: str }) },
-  rebased: { version: 1, data: obj({ base: str }) },
+  // The Merge gate rebased the Job branch from `before` onto the default branch at `base`, and pushed it as `head`.
+  rebased: { version: 2, data: obj({ base: str }, { before: str, head: str }), upgrades: { 1: sameData } },
   "merge-gate-evaluated": {
     version: 2,
     data: obj({ passed: { type: "boolean" } }, { head: str, failures: { type: "array", items: obj({ code: str, why: str }) } }),
     upgrades: { 1: sameData },
   },
   "would-have-merged": { version: 1, data: obj({ would: { type: "boolean" } }, { why: str }) },
-  "pr-merged": { version: 1, data: obj({}, { number: int, by: str }) },
+  // Merged by a human (`by`, actor `human:<login>`), or by the Factory (actor `orchestrator`) as the commit `sha`.
+  "pr-merged": { version: 2, data: obj({}, { number: int, by: str, sha: str }), upgrades: { 1: sameData } },
   "pr-closed": { version: 1, data: obj({}, { number: int }) },
-  reverted: { version: 1, data: obj({}, { revert_pr: int, why: str }) },
+  // The post-merge watch saw the default branch go red and opened `revert_pr`; `merged` if the Factory merged it (in auto).
+  reverted: { version: 2, data: obj({}, { revert_pr: int, why: str, merged: { type: "boolean" } }), upgrades: { 1: sameData } },
   // Factory-wide
   "factory-started": { version: 1, data: obj() },
   "factory-stopped": { version: 1, data: obj() },

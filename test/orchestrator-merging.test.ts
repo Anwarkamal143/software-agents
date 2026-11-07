@@ -1,0 +1,311 @@
+import { describe, expect, test } from "vitest";
+import type { AgentRunRequest } from "../src/agents/adapter.js";
+import { building, pass, ScriptedAgent } from "./fakes/agent.js";
+import { approved, comment } from "./fakes/source.js";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { fixture } from "./helpers/config.js";
+import { fakeFactory } from "./helpers/factory.js";
+import { agentGit, commitAll, writeIn } from "./helpers/git.js";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+
+/**
+ * The e2e config at an Autonomy level. Its verify command names built.txt, which the Merge gate
+ * reads as the change editing its own checks; through $PWD it no longer names the file.
+ */
+const withAutonomy = (autonomy: "off" | "trial" | "auto") =>
+  fixture("e2e.yaml")
+    .replace("  bounce_cap: 3", `  bounce_cap: 3\n  autonomy: ${autonomy}`)
+    .replace(`verify: ["test -f built.txt"]`, `verify: ['test -f "$PWD/built.txt"']`);
+const remoteHas = (remote: string, ref: string) => {
+  try {
+    agentGit(remote, "rev-parse", "--verify", "-q", ref);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/** A build that adds its own file, and the built.txt verify looks for, the same in every Job: no conflict. */
+const buildsOwn = (file: string) => (req: AgentRunRequest) => {
+  writeIn(req.workingCopy.dir, "built.txt", "built\n");
+  writeIn(req.workingCopy.dir, file, `export const x = "${file}";\n`);
+  commitAll(req.workingCopy.dir, `Add ${file}`);
+  return pass(`Added ${file}.`);
+};
+
+/** Someone pushes to a branch on GitHub, outside the Factory. */
+function pushOutside(remote: string, branch: string): string {
+  const dir = mkdtempSync(join(tmpdir(), "outside-"));
+  try {
+    agentGit(dir, "clone", "-q", "-b", branch, remote, ".");
+    writeIn(dir, "sneaky.txt", "not checked\n");
+    commitAll(dir, "Sneak one in");
+    agentGit(dir, "push", "-q", "origin", branch);
+    return agentGit(dir, "rev-parse", "HEAD");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+describe("PRs and merging", () => {
+  test("after build pushes, the Orchestrator opens a draft PR for the Job branch", async () => {
+    const f = fakeFactory(new ScriptedAgent({ build: [building] }));
+    f.source.push(approved(7));
+
+    await f.orchestrator.runUntilIdle();
+
+    const pr = f.pulls.of("factory/7")!;
+    expect(pr).toMatchObject({ base: "main", title: "Issue 7", state: "open" });
+    expect(pr.body).toContain("Closes #7");
+    const types = f.types(f.onlyJob().job_id);
+    expect(types.indexOf("pr-opened")).toBe(types.indexOf("branch-pushed") + 1);
+    expect(f.log.store.read().find((e) => e.type === "pr-opened")?.data).toEqual({ number: pr.number, url: `https://github.com/acme/web-app/pull/${pr.number}` });
+    expect(f.pulls.calls.filter((c) => c.startsWith("open"))).toHaveLength(1);
+    expect(agentGit(f.remote, "rev-parse", "factory/7")).toBe(f.log.store.read().find((e) => e.type === "branch-pushed")?.data.head);
+  });
+
+  test("trial never merges without /approve, and records whether it would have merged and why", async () => {
+    const f = fakeFactory(new ScriptedAgent({ build: [building] }), withAutonomy("trial"));
+    f.source.push(approved(7));
+
+    await f.orchestrator.runUntilIdle();
+
+    const job = f.onlyJob();
+    expect(f.types(job.job_id).slice(-4)).toEqual(["merge-gate-evaluated", "would-have-merged", "checkpoint-evaluated", "human-requested"]);
+    const events = f.log.eventsFor(job.job_id);
+    expect(events.find((e) => e.type === "would-have-merged")?.data).toEqual({ would: true, why: "the Merge gate passed and no Risk rule matched" });
+    expect(events.at(-1)?.data).toMatchObject({ kind: "approval", cause: "autonomy" });
+    expect(String(events.at(-1)?.data.text)).toContain("In auto, the Factory would have merged: the Merge gate passed and no Risk rule matched.");
+    expect(job).toMatchObject({ status: "waiting", reason: "autonomy" });
+    expect(f.pulls.calls.some((c) => c.startsWith("merge"))).toBe(false);
+    // Ready for you to review and merge yourself.
+    expect(f.pulls.of("factory/7")?.draft).toBe(false);
+  });
+
+  test("after /approve, the Factory merges through the gate, and the ending deletes the branches and the Working copy", async () => {
+    const f = fakeFactory(new ScriptedAgent({ build: [building] }), withAutonomy("off"));
+    f.source.push(approved(7));
+    await f.orchestrator.runUntilIdle();
+    const job_id = f.onlyJob().job_id;
+    expect(f.types(job_id)).not.toContain("would-have-merged");
+
+    f.source.push(comment(7, "/approve"));
+    await f.orchestrator.runUntilIdle();
+
+    expect(f.onlyJob().status).toBe("merged");
+    const merged = f.log.eventsFor(job_id).findLast((e) => e.type === "pr-merged")!;
+    const pr = f.pulls.of("factory/7")!;
+    expect(merged).toMatchObject({ actor: "orchestrator", data: { number: pr.number, sha: pr.mergedAs } });
+    expect(agentGit(f.remote, "rev-parse", "main")).toBe(pr.mergedAs);
+    expect(agentGit(f.remote, "show", "main:built.txt")).toMatch(/^build \d+$/);
+    expect(remoteHas(f.remote, "refs/heads/factory/7")).toBe(false);
+    expect(existsSync(join(f.home, "work", job_id))).toBe(false);
+  });
+
+  test("two Jobs in one repo: the second is rebased onto the first's merge and re-checked before it merges", async () => {
+    const f = fakeFactory(new ScriptedAgent({ build: [buildsOwn("src/seven.ts"), buildsOwn("src/eight.ts")] }), withAutonomy("auto"));
+    f.source.push(approved(7), approved(8));
+
+    await f.orchestrator.runUntilIdle();
+
+    expect(f.log.jobs().map((j) => j.status)).toEqual(["merged", "merged"]);
+    const [first, second] = f.log.store.read().filter((e) => e.type === "pr-merged").map((e) => e.job_id!);
+    expect(f.types(first!)).not.toContain("rebased");
+    const events = f.log.eventsFor(second!);
+    const rebased = events.find((e) => e.type === "rebased")!;
+    const firstMerge = f.log.eventsFor(first!).find((e) => e.type === "pr-merged")!;
+    expect(rebased.data).toMatchObject({ base: firstMerge.data.sha, before: events.findLast((e) => e.type === "branch-pushed")?.data.head });
+    const after = events.slice(events.indexOf(rebased) + 1);
+    expect(after.map((e) => e.type)).toEqual([
+      "stage-started", "evidence-recorded", "stage-passed", // verify, again, on the rebased head
+      "merge-gate-evaluated", "checkpoint-evaluated", "pr-merged",
+    ]);
+    expect(after[1]!.data.head).toBe(rebased.data.head);
+    expect(after[3]!.data).toMatchObject({ passed: true, head: rebased.data.head });
+    // Agent Stages didn't run again: their passes carried over.
+    expect(f.agent.stagesRun().filter((s) => s === "review")).toHaveLength(2);
+    for (const file of ["src/seven.ts", "src/eight.ts"]) expect(agentGit(f.remote, "show", `main:${file}`)).toContain(file);
+  });
+
+  test("a Job whose rebase conflicts Bounces to build with the conflicting files as findings", async () => {
+    const f = fakeFactory(new ScriptedAgent({ build: [building, building] }), withAutonomy("auto"));
+    f.source.push(approved(7), approved(8));
+
+    await f.orchestrator.runUntilIdle();
+
+    // Whichever reached the gate first merged; the other conflicts with it.
+    const merged = f.log.jobs().find((j) => j.status === "merged");
+    const conflicted = f.log.jobs().find((j) => j.job_id !== merged?.job_id);
+    expect(merged).toBeDefined();
+    const bounced = f.log.eventsFor(conflicted!.job_id).find((e) => e.type === "bounced")!;
+    const base = f.log.eventsFor(merged!.job_id).find((e) => e.type === "pr-merged")!.data.sha as string;
+    expect(bounced.data).toMatchObject({
+      from: "merge-gate",
+      to: "build",
+      bounce: 1,
+      findings: [{ severity: "error", file: "built.txt", root_cause: "rebase-conflict:built.txt" }],
+    });
+    expect(String((bounced.data.findings as { message: string }[])[0]!.message)).toContain(`Merge ${base} into the branch`);
+    expect(f.log.eventsFor(conflicted!.job_id).some((e) => e.type === "rebased")).toBe(false);
+    // Build runs again with the conflict in its brief.
+    const rebuild = f.agent.requests.filter((r) => r.brief.stage === "build" && r.job_id === conflicted!.job_id).at(-1)!;
+    expect(rebuild.brief.earlier.at(-1)).toMatchObject({ stage: "merge-gate", verdict: "fail", findings: [{ root_cause: "rebase-conflict:built.txt" }] });
+    // That build changed nothing, so the same conflict comes back: a human decides.
+    expect(conflicted).toMatchObject({ status: "waiting", reason: "repeated-root-cause" });
+  });
+
+  test("a head change between check and merge makes --match-head-commit refuse, and the gate runs again", async () => {
+    const f = fakeFactory(new ScriptedAgent({ build: [building] }), withAutonomy("auto"));
+    let sneaked = "";
+    f.pulls.beforeMerge = (pr) => {
+      sneaked = pushOutside(f.remote, pr.branch);
+      f.pulls.beforeMerge = null;
+    };
+    f.source.push(approved(7));
+
+    await f.orchestrator.runUntilIdle();
+
+    const events = f.log.eventsFor(f.onlyJob().job_id);
+    const refused = events.findIndex((e) => e.data.outcome === "merge-refused");
+    expect(events[refused - 1]).toMatchObject({ type: "checkpoint-evaluated", data: { outcome: "merge" } });
+    expect(String(events[refused]!.data.why)).toContain("Head branch was modified");
+    expect(events.slice(refused + 1).map((e) => e.type)).toEqual(["merge-gate-evaluated", "checkpoint-evaluated", "human-requested"]);
+    expect(events[refused + 1]!.data).toMatchObject({ passed: false, head: sneaked, failures: expect.arrayContaining([{ code: "evidence", why: `no Evidence for the head ${sneaked}` }]) });
+    expect(f.onlyJob()).toMatchObject({ status: "waiting", reason: "merge-gate" });
+    expect(f.log.store.read().some((e) => e.type === "pr-merged")).toBe(false);
+  });
+
+  describe("the post-merge watch", () => {
+    const merged = async (autonomy: "auto" | "trial", time = { now: () => new Date() }) => {
+      const f = fakeFactory(new ScriptedAgent({ build: [building] }), withAutonomy(autonomy), time);
+      f.source.push(approved(7));
+      await f.orchestrator.runUntilIdle();
+      if (autonomy !== "auto") {
+        f.source.push(comment(7, "/approve"));
+        await f.orchestrator.runUntilIdle();
+      }
+      const job = f.onlyJob();
+      expect(job.status).toBe("merged");
+      const sha = f.log.eventsFor(job.job_id).findLast((e) => e.type === "pr-merged")!.data.sha as string;
+      return { f, job, sha };
+    };
+
+    test("a red CI run after an auto-merge opens a revert PR and merges it, and starts no new Job", async () => {
+      const { f, job, sha } = await merged("auto");
+      f.pulls.checksOf.set(sha, "red");
+
+      await f.orchestrator.runUntilIdle();
+
+      const events = f.log.eventsFor(job.job_id);
+      const revert = f.pulls.of("revert-101")!;
+      expect(events.slice(-2).map((e) => [e.type, e.data])).toEqual([
+        ["checkpoint-evaluated", { checkpoint: "after-merge", outcome: "red", why: `CI on the default branch went red at ${sha.slice(0, 12)} after #101 merged.` }],
+        ["reverted", { revert_pr: revert.number, merged: true, why: `CI on the default branch went red at ${sha.slice(0, 12)} after #101 merged.` }],
+      ]);
+      expect(revert.state).toBe("merged");
+      expect(() => agentGit(f.remote, "show", "main:built.txt")).toThrow();
+      expect(f.onlyJob()).toMatchObject({ status: "merged" });
+
+      // The revert reopens the issue (through the Mirror): that alone starts nothing, and the watch is over.
+      f.source.push({ kind: "reopened", repo: "acme/web-app", issue: 7, by: "alice" });
+      await f.orchestrator.runUntilIdle();
+      expect(f.log.jobs()).toHaveLength(1);
+      expect(f.pulls.calls.filter((c) => c.startsWith("revert"))).toHaveLength(1);
+    });
+
+    test("after an /approve'd merge in trial, a red run opens the revert PR for you to merge", async () => {
+      const { f, job, sha } = await merged("trial");
+      f.pulls.checksOf.set(sha, "red");
+
+      await f.orchestrator.runUntilIdle();
+
+      expect(f.log.eventsFor(job.job_id).at(-1)).toMatchObject({ type: "reverted", data: { merged: false } });
+      expect(f.pulls.of("revert-101")).toMatchObject({ state: "open" });
+      expect(agentGit(f.remote, "show", "main:built.txt")).toMatch(/^build/);
+    });
+
+    test("green ends the watch; no result within 60 minutes ends it too", async () => {
+      const green = await merged("auto");
+      await green.f.orchestrator.runUntilIdle();
+      expect(green.f.log.eventsFor(green.job.job_id).at(-1)).toMatchObject({ type: "checkpoint-evaluated", data: { checkpoint: "after-merge", outcome: "green" } });
+
+      let at = Date.now();
+      const slow = await merged("auto", { now: () => new Date(at) });
+      slow.f.pulls.checksOf.set(slow.sha, "pending");
+      await slow.f.orchestrator.runUntilIdle();
+      expect(slow.f.log.eventsFor(slow.job.job_id).at(-1)?.type).toBe("pr-merged");
+      at += 61 * 60_000;
+      await slow.f.orchestrator.runUntilIdle();
+      expect(slow.f.log.eventsFor(slow.job.job_id).at(-1)).toMatchObject({ type: "checkpoint-evaluated", data: { checkpoint: "after-merge", outcome: "timed-out" } });
+      slow.f.pulls.checksOf.set(slow.sha, "red");
+      await slow.f.orchestrator.runUntilIdle();
+      expect(slow.f.log.store.read().some((e) => e.type === "reverted")).toBe(false);
+    });
+  });
+
+  test("each ending leaves what it should: cancelled deletes branches and the Working copy; failed keeps both", async () => {
+    const f = fakeFactory(new ScriptedAgent({ build: [building, building] }), withAutonomy("trial"));
+    f.source.push(approved(7), approved(8));
+    await f.orchestrator.runUntilIdle();
+    const [seven, eight] = f.log.jobs();
+
+    f.source.push(comment(7, "/cancel"));
+    f.log.record({ type: "job-failed", job_id: eight!.job_id, attempt: 1, actor: "orchestrator", data: { reason: "gave up" } });
+    await f.orchestrator.runUntilIdle();
+
+    expect(f.log.job(seven!.job_id)?.status).toBe("cancelled");
+    expect(remoteHas(f.remote, "refs/heads/factory/7")).toBe(false);
+    expect(existsSync(join(f.home, "work", seven!.job_id))).toBe(false);
+    expect(f.log.job(eight!.job_id)?.status).toBe("failed");
+    expect(remoteHas(f.remote, "refs/heads/factory/8")).toBe(true);
+    expect(existsSync(join(f.home, "work", eight!.job_id))).toBe(true);
+    // The Mirror closes the cancelled Job's PR and drafts the failed one's (see the GitHub Mirror's tests).
+    expect(f.mirror.writes.some((w) => w.event.type === "job-cancelled")).toBe(true);
+  });
+
+  test("while GitHub is down, Stage runs carry on and the merge waits; once it's back, the PR opens and the Job merges", async () => {
+    const f = fakeFactory(new ScriptedAgent({ build: [building] }), withAutonomy("auto"));
+    f.pulls.down = true;
+    f.source.push(approved(7));
+
+    await f.orchestrator.runUntilIdle();
+
+    expect(f.agent.stagesRun()).toEqual(["triage", "build", "review", "security"]);
+    expect(f.onlyJob()).toMatchObject({ status: "queued", stage: "security" });
+    expect(f.types(f.onlyJob().job_id)).not.toContain("merge-gate-evaluated");
+
+    f.pulls.down = false;
+    await f.orchestrator.runUntilIdle();
+    expect(f.types(f.onlyJob().job_id).slice(-4)).toEqual(["pr-opened", "merge-gate-evaluated", "checkpoint-evaluated", "pr-merged"]);
+  });
+
+  test("a merge GitHub won't do whatever the head (branch protection) goes to a human instead of being tried again and again", async () => {
+    const f = fakeFactory(new ScriptedAgent({ build: [building] }), withAutonomy("auto"));
+    f.pulls.refuseMerges = "At least 1 approving review is required.";
+    f.source.push(approved(7));
+
+    await f.orchestrator.runUntilIdle();
+    await f.orchestrator.runUntilIdle();
+
+    expect(f.pulls.calls.filter((c) => c.startsWith("merge"))).toHaveLength(1);
+    expect(f.log.store.read().at(-1)).toMatchObject({ type: "human-requested", data: { cause: "merge-gate", text: "GitHub won't merge #101: At least 1 approving review is required." } });
+    expect(f.onlyJob()).toMatchObject({ status: "waiting", reason: "merge-gate" });
+  });
+
+  test("a revert GitHub refuses ends the watch, saying so, rather than being asked for every pass", async () => {
+    const f = fakeFactory(new ScriptedAgent({ build: [building] }), withAutonomy("auto"));
+    f.source.push(approved(7));
+    await f.orchestrator.runUntilIdle();
+    const job_id = f.onlyJob().job_id;
+    f.pulls.checksOf.set(f.log.eventsFor(job_id).findLast((e) => e.type === "pr-merged")!.data.sha as string, "red");
+    f.pulls.refuseReverts = true;
+
+    await f.orchestrator.runUntilIdle();
+    await f.orchestrator.runUntilIdle();
+
+    expect(f.pulls.calls.filter((c) => c.startsWith("revert"))).toHaveLength(1);
+    expect(f.log.eventsFor(job_id).at(-1)).toMatchObject({ type: "checkpoint-evaluated", data: { checkpoint: "after-merge", outcome: "red", why: expect.stringContaining("GitHub refused the revert PR") } });
+  });
+});

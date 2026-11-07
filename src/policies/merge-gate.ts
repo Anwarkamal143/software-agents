@@ -199,3 +199,48 @@ export function mergeGateEvents(head: string, gate: MergeGateResult, decision: M
     { type: "checkpoint-evaluated", data: { checkpoint: "merge-gate", outcome: decision.action, why: decision.why } },
   ];
 }
+
+const ENDING_OF: Record<string, StageAtGate["ending"]> = {
+  "stage-passed": "passed",
+  "stage-skipped": "skipped",
+  "stage-failed": "failed",
+  "stage-needs-human": "needs-human",
+  "stage-errored": "errored",
+  "stage-interrupted": "errored",
+};
+
+/** Where each `rebased` moved the Job branch: an agent pass at `before` carries over to `head` (ADR 0004). */
+function rebaseChain(events: FactoryEvent[]): (head: string | null) => string | null {
+  const moved = new Map<string, string>();
+  for (const e of events) if (e.type === "rebased" && typeof e.data.before === "string" && typeof e.data.head === "string") moved.set(e.data.before, e.data.head);
+  return (head) => {
+    const seen = new Set<string>();
+    while (head !== null && moved.has(head) && !seen.has(head)) {
+      seen.add(head);
+      head = moved.get(head)!;
+    }
+    return head;
+  };
+}
+
+/**
+ * How each Stage's latest Stage run in this Attempt ended, and at which head. A clean rebase
+ * changes no lines an Agent Stage judged, so its pass carries over to the rebased head; a
+ * Check Stage's never does: it has to run again on the new head (ADR 0004).
+ */
+export function stagesAtGate(events: FactoryEvent[], stages: { id: string; kind: "agent" | "check" }[]): StageAtGate[] {
+  const carried = rebaseChain(events);
+  return stages.map(({ id, kind }) => {
+    const last = events.findLast((e) => e.data.stage === id && e.type in ENDING_OF);
+    if (!last) return { stage: id, ending: "none", head: null };
+    const ending = ENDING_OF[last.type]!;
+    const head = ending === "skipped" || typeof last.data.head !== "string" ? null : last.data.head;
+    return { stage: id, ending, head: kind === "agent" && ending === "passed" ? carried(head) : head };
+  });
+}
+
+/** Check Stages that passed, but not at `head`: after a rebase, they run again before the gate decides. */
+export function checksToRerun(events: FactoryEvent[], stages: { id: string; kind: "agent" | "check" }[], head: string): string[] {
+  const at = stagesAtGate(events, stages);
+  return stages.filter((s, i) => s.kind === "check" && at[i]!.ending === "passed" && at[i]!.head !== head).map((s) => s.id);
+}

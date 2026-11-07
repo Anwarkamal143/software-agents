@@ -4,7 +4,7 @@ import { JobStoreUnwritable } from "../src/orchestrator/orchestrator.js";
 import type { JobStore } from "../src/store/job-store.js";
 import { approved } from "./fakes/source.js";
 import { building, errored, hangs, pass, ScriptedAgent } from "./fakes/agent.js";
-import { fakeFactory } from "./helpers/factory.js";
+import { fakeFactory, expectAtMergeGate } from "./helpers/factory.js";
 
 const tick = (ms = 5) => new Promise((r) => setTimeout(r, ms));
 
@@ -34,7 +34,7 @@ describe("Orchestrator: watching a Stage run", () => {
     expect(errored.data).toMatchObject({ stage: "triage", reason: "timeout" });
     expect(String(errored.data.message)).toMatch(/no message from the session/);
     expect(f.agent.requests[1]!.resume).toBeUndefined();
-    expect(f.log.store.read().at(-1)).toMatchObject({ type: "checkpoint-evaluated" });
+    expectAtMergeGate(f.log.store.read());
   });
 
   test("a session that keeps talking is still aborted at its wall-clock Budget, as a timeout", async () => {
@@ -127,7 +127,7 @@ describe("Orchestrator: watching a Stage run", () => {
     await f.orchestrator.runUntilIdle();
 
     expect(f.log.store.read().filter((e) => e.type === "guard-blocked")).toHaveLength(2);
-    expect(f.log.store.read().at(-1)).toMatchObject({ type: "checkpoint-evaluated" });
+    expectAtMergeGate(f.log.store.read());
   });
 
   test("a rejected rate limit pauses the Factory until resetsAt, and the cut-off run starts over without counting", async () => {
@@ -156,7 +156,7 @@ describe("Orchestrator: watching a Stage run", () => {
     await f.orchestrator.runUntilIdle();
     expect(f.log.store.read().some((e) => e.type === "plan-limit-reset")).toBe(true);
     expect(f.agent.stagesRun()).toEqual(["triage", "triage", "build", "review", "security"]);
-    expect(f.log.store.read().at(-1)).toMatchObject({ type: "checkpoint-evaluated" });
+    expectAtMergeGate(f.log.store.read());
   });
 
   test("past 90% of the plan limit no new Stage run starts, and the running one finishes", async () => {
@@ -186,7 +186,7 @@ describe("Orchestrator: watching a Stage run", () => {
     await f.orchestrator.runUntilIdle();
 
     expect(f.log.store.read().some((e) => e.type === "plan-limit-hit")).toBe(false);
-    expect(f.log.store.read().at(-1)).toMatchObject({ type: "checkpoint-evaluated" });
+    expectAtMergeGate(f.log.store.read());
   });
 
   test("if the Job store can't be written, the Orchestrator stops", async () => {

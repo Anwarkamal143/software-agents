@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 import type { Autonomy } from "../src/config/types.js";
 import type { FactoryEvent } from "../src/events/envelope.js";
 import { EventTypes } from "../src/events/registry.js";
-import { approvedAtMergeGate, decideMerge, evaluateMergeGate, mergeGateEvents, selfEditedChecks, type MergeGateFacts, type StageAtGate } from "../src/policies/merge-gate.js";
+import { approvedAtMergeGate, checksToRerun, decideMerge, evaluateMergeGate, mergeGateEvents, selfEditedChecks, stagesAtGate, type MergeGateFacts, type StageAtGate } from "../src/policies/merge-gate.js";
 import { BUILT_IN_RISK_RULES } from "../src/config/policies.js";
 import { matchRiskRules, type ChangedFile } from "../src/policies/risk.js";
 
@@ -251,5 +251,62 @@ describe("approvedAtMergeGate: /approve from the Event log", () => {
     expect(approvedAtMergeGate(asked("run-error"))).toBe(false);
     expect(approvedAtMergeGate([...asked("risk-rule"), ev(4, "branch-pushed", { head: "newer" })])).toBe(false);
     expect(approvedAtMergeGate([ev(2, "human-requested", { kind: "approval", cause: "risk-rule" }), ev(3, "human-answered", { command: "reject", request: "e2" })])).toBe(false);
+  });
+});
+
+describe("stagesAtGate and checksToRerun: the gate's view of a rebased Attempt", () => {
+  let seq = 0;
+  const ev = (type: string, data: Record<string, unknown> = {}): FactoryEvent => ({
+    id: `s${++seq}`, seq, type, schema_version: 1, at: "2026-11-01T10:00:00.000Z", job_id: "j", attempt: 1, stage_run_id: null, actor: "orchestrator", caused_by: null, data,
+  });
+  const stages = [
+    { id: "triage", kind: "agent" as const },
+    { id: "build", kind: "agent" as const },
+    { id: "verify", kind: "check" as const },
+    { id: "ui-review", kind: "agent" as const },
+    { id: "review", kind: "agent" as const },
+  ];
+  const throughPipeline = () => [
+    ev("stage-passed", { stage: "triage", head: "base" }),
+    ev("stage-passed", { stage: "build", head: "h1" }),
+    ev("stage-passed", { stage: "verify", head: "h1" }),
+    ev("stage-skipped", { stage: "ui-review", why: "when: no label" }),
+    ev("stage-passed", { stage: "review", head: "h1" }),
+  ];
+
+  test("before any rebase, each Stage stands at the head it ended at", () => {
+    expect(stagesAtGate(throughPipeline(), stages)).toEqual([
+      { stage: "triage", ending: "passed", head: "base" },
+      { stage: "build", ending: "passed", head: "h1" },
+      { stage: "verify", ending: "passed", head: "h1" },
+      { stage: "ui-review", ending: "skipped", head: null },
+      { stage: "review", ending: "passed", head: "h1" },
+    ]);
+    expect(checksToRerun(throughPipeline(), stages, "h1")).toEqual([]);
+  });
+
+  test("after a clean rebase, agent passes carry over to the new head and Check Stages must run again", () => {
+    const events = [...throughPipeline(), ev("rebased", { base: "main2", before: "h1", head: "h2" })];
+    const at = stagesAtGate(events, stages);
+    expect(at.map((s) => [s.stage, s.head])).toEqual([["triage", "base"], ["build", "h2"], ["verify", "h1"], ["ui-review", null], ["review", "h2"]]);
+    expect(checksToRerun(events, stages, "h2")).toEqual(["verify"]);
+    expect(evaluateMergeGate({ head: "h2", stages: at, evidence: [{ head: "h1" }], pr: { checks: "green", conflicts: false }, selfEdits: [] }).passed).toBe(false);
+
+    const rechecked = [...events, ev("stage-started", { stage: "verify" }), ev("stage-passed", { stage: "verify", head: "h2" })];
+    expect(checksToRerun(rechecked, stages, "h2")).toEqual([]);
+    expect(evaluateMergeGate({ head: "h2", stages: stagesAtGate(rechecked, stages), evidence: [{ head: "h2" }], pr: { checks: "green", conflicts: false }, selfEdits: [] }).passed).toBe(true);
+  });
+
+  test("two rebases in a row carry agent passes along the whole chain", () => {
+    const events = [...throughPipeline(), ev("rebased", { base: "m2", before: "h1", head: "h2" }), ev("rebased", { base: "m3", before: "h2", head: "h3" })];
+    expect(stagesAtGate(events, stages).find((s) => s.stage === "review")?.head).toBe("h3");
+  });
+
+  test("a Stage's latest ending wins, and a Stage that never ran stands at none", () => {
+    const events = [...throughPipeline(), ev("stage-failed", { stage: "review", head: "h1" })];
+    expect(stagesAtGate(events, [...stages, { id: "security", kind: "agent" }]).slice(-2)).toEqual([
+      { stage: "review", ending: "failed", head: "h1" },
+      { stage: "security", ending: "none", head: null },
+    ]);
   });
 });

@@ -1,5 +1,7 @@
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import type { ChangedFile } from "../policies/risk.js";
+import type { SelfEditInput } from "../policies/merge-gate.js";
 import { Git, HARDENED_UPLOAD_PACK } from "./git.js";
 
 /** An Attempt's own clone of the Target repo: the only place its agents may write (ADR 0008). */
@@ -34,6 +36,21 @@ export interface StartAttempt {
   job_id: string;
   attempt: number;
   branch: string;
+}
+
+/** What the Merge gate rebase did to the Job branch. */
+export type Rebase =
+  /** The branch already contains the default branch's head, `base`. */
+  | { kind: "up-to-date"; base: string }
+  /** Rebased onto `base` and pushed as `head`. */
+  | { kind: "rebased"; base: string; head: string }
+  /** Replaying the branch onto `base` conflicts in `files`; nothing was pushed. */
+  | { kind: "conflict"; base: string; files: string[] };
+
+/** A change as the Merge gate judges it: against where it branched from the default branch. */
+export interface Change {
+  files: ChangedFile[];
+  packageJson: SelfEditInput["packageJson"];
 }
 
 export interface ClonesOptions {
@@ -94,11 +111,16 @@ export class Clones {
     const wc = this.workingCopy({ repo, job_id, attempt, branch, base });
     rmSync(wc.attemptDir, { recursive: true, force: true });
     for (const d of Object.values(wc.env)) mkdirSync(d, { recursive: true });
+    await this.cloneWorkingCopy(wc);
+    return wc;
+  }
+
+  /** The Working copy itself: the Job branch as the Trusted clone has it, borrowing its objects. */
+  private async cloneWorkingCopy(wc: WorkingCopy): Promise<void> {
     await this.git.run(
-      ["clone", "--quiet", "--reference", trusted.dir, "--single-branch", "--branch", branch, "--no-tags", "--template=", trusted.dir, wc.path],
+      ["clone", "--quiet", "--reference", wc.trustedClone, "--single-branch", "--branch", wc.branch, "--no-tags", "--template=", wc.trustedClone, wc.path],
       { cwd: wc.attemptDir },
     );
-    return wc;
   }
 
   /** Where an Attempt's Working copy lives, as recorded on `attempt-started`. Creates nothing. */
@@ -136,6 +158,72 @@ export class Clones {
   async filesChanged(incoming: Incoming, before: string, head: string): Promise<string[]> {
     const out = await this.git.run(["diff", "--name-only", "-z", "--no-renames", before, head], { cwd: incoming.quarantine });
     return out.split("\0").filter(Boolean);
+  }
+
+  /**
+   * What `head` changes against where it meets the default branch, measured in the Trusted clone:
+   * each file's added and removed lines, and every changed `package.json` before and after.
+   */
+  async changes(wc: WorkingCopy, head: string): Promise<Change> {
+    const cwd = wc.trustedClone;
+    const base = (await this.git.run(["merge-base", `refs/remotes/origin/${await this.defaultBranchOf(cwd)}`, head], { cwd })).trim();
+    const numstat = await this.git.run(["diff", "--numstat", "-z", "--no-renames", base, head], { cwd });
+    const files = new Map<string, ChangedFile>();
+    for (const entry of numstat.split("\0").filter(Boolean)) {
+      const [added, removed, path] = entry.split("\t") as [string, string, string];
+      files.set(path, { path, added: Number(added) || 0, removed: Number(removed) || 0, addedLines: [] });
+    }
+    let current: ChangedFile | undefined;
+    for (const line of (await this.git.run(["diff", "-U0", "--no-renames", "--no-color", "--no-ext-diff", base, head], { cwd })).split("\n")) {
+      if (line.startsWith("+++ ")) current = files.get(line.slice("+++ b/".length));
+      else if (line.startsWith("+") && current) current.addedLines.push(line.slice(1));
+    }
+    const show = (commit: string, path: string) => this.git.run(["show", `${commit}:${path}`], { cwd }).catch(() => null);
+    const packageJson: Change["packageJson"] = [];
+    for (const path of files.keys()) {
+      if (path === "package.json" || path.endsWith("/package.json")) packageJson.push({ path, before: await show(base, path), after: await show(head, path) });
+    }
+    return { files: [...files.values()], packageJson };
+  }
+
+  /**
+   * The Merge gate's re-verify (ADR 0008): fetches the default branch and, if the Job branch at
+   * `head` doesn't contain it, rebases the branch onto it in a worktree of the Trusted clone and
+   * pushes the result. A conflict pushes nothing and names the conflicting files.
+   */
+  async rebaseOntoDefault(wc: WorkingCopy, head: string): Promise<Rebase> {
+    const cwd = wc.trustedClone;
+    return this.exclusive(cwd, async () => {
+      await this.git.run(["fetch", "--quiet", "--prune", "--no-tags", "origin"], { cwd });
+      const base = (await this.git.run(["rev-parse", `refs/remotes/origin/${await this.defaultBranchOf(cwd)}^{commit}`], { cwd })).trim();
+      if (await this.git.test(["merge-base", "--is-ancestor", base, head], { cwd })) return { kind: "up-to-date", base };
+      const dir = join(wc.attemptDir, "rebase");
+      rmSync(dir, { recursive: true, force: true });
+      await this.git.test(["worktree", "prune"], { cwd });
+      await this.git.run(["worktree", "add", "--quiet", "--detach", dir, head], { cwd });
+      try {
+        if (!(await this.git.test(["rebase", "--quiet", base], { cwd: dir }))) {
+          const files = (await this.git.run(["diff", "--name-only", "-z", "--diff-filter=U"], { cwd: dir })).split("\0").filter(Boolean);
+          await this.git.test(["rebase", "--abort"], { cwd: dir });
+          return { kind: "conflict", base, files };
+        }
+        const rebased = (await this.git.run(["rev-parse", "HEAD"], { cwd: dir })).trim();
+        const ref = `refs/heads/${wc.branch}`;
+        await this.git.run(["push", "--quiet", "--no-verify", `--force-with-lease=${ref}:${head}`, "origin", `${rebased}:${ref}`], { cwd });
+        await this.git.run(["update-ref", ref, rebased], { cwd });
+        // A later Bounce builds on the rebased branch, so the Working copy is made again from it.
+        rmSync(wc.path, { recursive: true, force: true });
+        await this.cloneWorkingCopy(wc);
+        return { kind: "rebased", base, head: rebased };
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+        await this.git.test(["worktree", "prune"], { cwd });
+      }
+    });
+  }
+
+  private async defaultBranchOf(trustedClone: string): Promise<string> {
+    return (await this.git.run(["symbolic-ref", "--short", "HEAD"], { cwd: trustedClone })).trim();
   }
 
   /** Fetches every branch and tag out of the Working copy into a fresh quarantine. */

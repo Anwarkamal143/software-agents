@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 import type { AgentRunOutcome } from "../src/agents/adapter.js";
 import { approved, comment } from "./fakes/source.js";
 import { building, errored, facts, pass, ScriptedAgent } from "./fakes/agent.js";
-import { fakeFactory } from "./helpers/factory.js";
+import { fakeFactory, expectAtMergeGate } from "./helpers/factory.js";
 
 /** A Stage result that doesn't fit the schema. */
 const invalid = (summary = "LGTM"): AgentRunOutcome => ({ kind: "output", output: { verdict: "pass", summary }, facts: facts(), session_id: "session-bad" });
@@ -38,7 +38,7 @@ describe("Orchestrator: Run errors are retried by reason (ADR 0010)", () => {
     expect(correction.brief.stage).toBe("triage");
     expect(correction.resume?.session_id).toBe("session-bad");
     expect(correction.resume?.input).toContain("result must have required property 'findings'");
-    expect(f.log.store.read().at(-1)).toMatchObject({ type: "checkpoint-evaluated" });
+    expectAtMergeGate(f.log.store.read());
   });
 
   test("a timeout starts a fresh session", async () => {
@@ -49,7 +49,7 @@ describe("Orchestrator: Run errors are retried by reason (ADR 0010)", () => {
 
     expect(f.agent.requests[1]!.brief.stage).toBe("triage");
     expect(f.agent.requests[1]!.resume).toBeUndefined();
-    expect(f.log.store.read().at(-1)).toMatchObject({ type: "checkpoint-evaluated" });
+    expectAtMergeGate(f.log.store.read());
   });
 
   test("a budget Run error is never retried", async () => {

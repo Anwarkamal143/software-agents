@@ -16,8 +16,6 @@ export interface AttemptProgress {
   earlier: EarlierResult[];
   /** Union of files changed by this Attempt's Stage runs. */
   filesChanged: Set<string>;
-  /** The Merge gate checkpoint has already been recorded. */
-  atMergeGate: boolean;
   /** The Job branch as last pushed, or null before the first push. */
   pushedHead: string | null;
   /** Every question a Stage asked in this Attempt that a human has answered. */
@@ -45,7 +43,6 @@ export function attemptProgress(events: FactoryEvent[], stages: string[]): Attem
     bouncedRootCauses: new Set(),
     earlier: [],
     filesChanged: new Set(),
-    atMergeGate: false,
     pushedHead: null,
     answers: [],
     pendingAnswer: null,
@@ -97,20 +94,25 @@ export function attemptProgress(events: FactoryEvent[], stages: string[]): Attem
       });
       for (const file of (e.data.files_changed as string[] | undefined) ?? []) progress.filesChanged.add(file);
     }
-    if ((e.type === "stage-passed" || e.type === "stage-skipped") && stage) progress.next = stages.indexOf(stage) + 1;
+    // A Check Stage passing again on a rebased head never sends the Pipeline back to the Stages after it.
+    if ((e.type === "stage-passed" || e.type === "stage-skipped") && stage) progress.next = Math.max(progress.next, stages.indexOf(stage) + 1);
     if (e.type === "stage-failed") lastFailure = (e.data.result as StageResult | undefined)?.findings ?? [];
     if (e.type === "bounced") {
       progress.bounces++;
       progress.next = stages.indexOf(String(e.data.to));
       const rejected = e.data.finding as Finding | undefined;
+      const own = e.data.findings as Finding[] | undefined;
       if (rejected) {
         // A /reject: the human's reason is the finding, not the last Stage failure's.
         progress.earlier.push({ stage: "human", verdict: "fail", summary: `${e.actor} rejected the work at ${String(e.data.from)}.`, findings: [rejected] });
+      } else if (own) {
+        // A Bounce from the Merge gate, such as a rebase conflict: it is its own failure.
+        progress.earlier.push({ stage: String(e.data.from), verdict: "fail", summary: String(e.data.summary ?? ""), findings: own });
+        for (const f of own) progress.bouncedRootCauses.add(f.root_cause);
       } else for (const f of lastFailure) progress.bouncedRootCauses.add(f.root_cause);
       lastFailure = [];
     }
-    if (e.type === "checkpoint-evaluated" && e.data.checkpoint === "merge-gate") progress.atMergeGate = true;
-    if (e.type === "branch-pushed") progress.pushedHead = String(e.data.head);
+    if (e.type === "branch-pushed" || (e.type === "rebased" && typeof e.data.head === "string")) progress.pushedHead = String(e.data.head);
   }
   return progress;
 }

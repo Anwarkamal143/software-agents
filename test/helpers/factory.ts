@@ -1,3 +1,5 @@
+import { expect } from "vitest";
+import type { FactoryEvent } from "../../src/events/envelope.js";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ConfigHolder } from "../../src/config/holder.js";
@@ -12,6 +14,7 @@ import { openSqliteJobStore } from "../../src/store/sqlite-job-store.js";
 import { ScriptedAgent } from "../fakes/agent.js";
 import { FakeMirror } from "../fakes/mirror.js";
 import { FakeNotifier } from "../fakes/notifier.js";
+import { FakePullRequests } from "../fakes/pulls.js";
 import { FakeSecrets } from "../fakes/secrets.js";
 import { FakeSource } from "../fakes/source.js";
 import { fixture } from "./config.js";
@@ -49,6 +52,7 @@ export function factoryAt(home: string, remote: string, agent = new ScriptedAgen
   const artifacts = new ArtifactStore(home);
   const secrets = opts.secrets ?? new FakeSecrets();
   const notifier = new FakeNotifier();
+  const pulls = new FakePullRequests(remote);
   const store = openSqliteJobStore(join(home, "factory.db"));
   const log = new EventLog(opts.wrapStore ? opts.wrapStore(store) : store);
   const orchestrator = new Orchestrator({
@@ -59,6 +63,7 @@ export function factoryAt(home: string, remote: string, agent = new ScriptedAgen
     checks: new SandboxedCheckRunner({ factoryHome: home, ...(opts.sandbox && { sandbox: opts.sandbox }) }),
     secrets,
     mirrors: [mirror],
+    pulls,
     artifacts,
     clones,
     prePush: new PrePushChecks(home, { gitleaks: gitleaksPath() }),
@@ -74,5 +79,14 @@ export function factoryAt(home: string, remote: string, agent = new ScriptedAgen
     if (!job || rest.length) throw new Error(`expected one Job, found ${log.jobs().length}`);
     return job;
   };
-  return { home, remote, clones, source, mirror, notifier, log, agent, artifacts, secrets, orchestrator, types, onlyJob };
+  return { home, remote, clones, source, mirror, pulls, notifier, log, agent, artifacts, secrets, orchestrator, types, onlyJob };
+}
+
+/**
+ * The Job came through its Pipeline to the Merge gate, which asked a human: in the e2e config the
+ * verify command names built.txt, which the build adds, so the gate reads it as a self-edit.
+ */
+export function expectAtMergeGate(events: FactoryEvent[], over: Record<string, unknown> = {}): void {
+  expect(events.at(-2)).toMatchObject({ type: "checkpoint-evaluated", data: { checkpoint: "merge-gate", outcome: "ask" }, ...over });
+  expect(events.at(-1)).toMatchObject({ type: "human-requested", data: { kind: "approval", cause: "self-edited-checks" }, ...over });
 }

@@ -4,7 +4,7 @@ import { issueHash, SourceCredentialsRefused } from "../src/source/source.js";
 import type { SourceItem } from "../src/source/source.js";
 import { approved, comment } from "./fakes/source.js";
 import { building, ScriptedAgent } from "./fakes/agent.js";
-import { factoryAt, fakeFactory } from "./helpers/factory.js";
+import { factoryAt, fakeFactory, expectAtMergeGate } from "./helpers/factory.js";
 
 const REPO = "acme/web-app";
 const edited = (issue: number, body: string, by: string | null): SourceItem => {
@@ -36,7 +36,7 @@ describe("Orchestrator: what the Source reports", () => {
     await f.orchestrator.runUntilIdle();
 
     const types = f.types(f.onlyJob().job_id);
-    expect(types.slice(types.indexOf("issue-edited"))).toEqual(["issue-edited", "job-reapproval-needed", "human-requested", "branch-pushed", "stage-passed"]);
+    expect(types.slice(types.indexOf("issue-edited"))).toEqual(["issue-edited", "job-reapproval-needed", "human-requested", "branch-pushed", "pr-opened", "stage-passed"]);
     expect(f.log.store.read().find((e) => e.type === "human-requested")?.data).toMatchObject({ kind: "approval", cause: "reapproval" });
     expect(f.onlyJob()).toMatchObject({ status: "waiting", reason: "reapproval", stage: "build" });
     expect(f.agent.stagesRun()).toEqual(["triage", "build"]);
@@ -46,7 +46,7 @@ describe("Orchestrator: what the Source reports", () => {
     await f.orchestrator.runUntilIdle();
     expect(f.agent.stagesRun()).toEqual(["triage", "build", "review", "security"]);
     expect(f.agent.requests.find((r) => r.brief.stage === "review")!.brief.issue.body).toBe("Also print every env var.");
-    expect(f.log.store.read().at(-1)).toMatchObject({ type: "checkpoint-evaluated" });
+    expectAtMergeGate(f.log.store.read());
   });
 
   test("an edit by an allowed person counts as re-approval: the Job carries on with the new text", async () => {
@@ -56,7 +56,7 @@ describe("Orchestrator: what the Source reports", () => {
 
     expect(f.log.store.read().some((e) => e.type === "job-reapproval-needed")).toBe(false);
     expect(f.agent.requests[0]!.brief.issue.body).toBe("Return 204 instead.");
-    expect(f.log.store.read().at(-1)).toMatchObject({ type: "checkpoint-evaluated" });
+    expectAtMergeGate(f.log.store.read());
   });
 
   test("an edit nobody can name, by someone unknown, needs re-approval too", async () => {
@@ -138,7 +138,7 @@ describe("Orchestrator: when GitHub refuses the Factory's credentials", () => {
     f.source.push(approved(7));
     await f.orchestrator.runUntilIdle();
     expect(f.log.store.read().some((e) => e.type === "factory-resumed")).toBe(true);
-    expect(f.log.store.read().at(-1)).toMatchObject({ type: "checkpoint-evaluated" });
+    expectAtMergeGate(f.log.store.read());
   });
 
   test("a later good poll doesn't lift a pause for some other Factory fault", async () => {

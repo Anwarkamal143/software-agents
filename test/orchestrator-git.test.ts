@@ -19,8 +19,9 @@ function deferred() {
   return { gate, release };
 }
 
+/** Polls for up to 30s: in a full parallel run, starting a Job's first Stage run can take seconds. */
 const until = async (cond: () => boolean) => {
-  for (let i = 0; i < 400 && !cond(); i++) await new Promise((r) => setTimeout(r, 10));
+  for (let i = 0; i < 3000 && !cond(); i++) await new Promise((r) => setTimeout(r, 10));
   if (!cond()) throw new Error("condition never held");
 };
 

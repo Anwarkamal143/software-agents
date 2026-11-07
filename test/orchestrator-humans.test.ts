@@ -5,7 +5,7 @@ import type { AgentRunOutcome } from "../src/agents/adapter.js";
 import { runCli } from "../src/cli/run.js";
 import { approved, comment } from "./fakes/source.js";
 import { asks, building, fail, finding, pass, ScriptedAgent } from "./fakes/agent.js";
-import { fakeFactory } from "./helpers/factory.js";
+import { fakeFactory, expectAtMergeGate } from "./helpers/factory.js";
 import { fixture } from "./helpers/config.js";
 
 async function cli(home: string, ...argv: string[]) {
@@ -48,7 +48,7 @@ describe("Orchestrator: Human requests and Reply commands", () => {
     expect(resumedEvent).toMatchObject({ caused_by: answered.id, data: { stage: "triage", session_id: "session-7", answer: answered.id } });
     // Later Stages see the Q&A too, as human input.
     expect(f.agent.requests.find((r) => r.brief.stage === "build")!.renderedBrief).toContain("Answer: GraphQL");
-    expect(f.log.store.read().at(-1)).toMatchObject({ type: "checkpoint-evaluated" });
+    expectAtMergeGate(f.log.store.read());
   });
 
   test("after 7 days the answer starts a fresh Stage run of the same Stage with the Q&A in its brief", async () => {
@@ -118,7 +118,7 @@ describe("Orchestrator: Human requests and Reply commands", () => {
     expect(bounced).toMatchObject({ actor: "human:alice", data: { from: "review", to: "build", bounce: 1, finding: { message: "No test covers /health.", root_cause: "human-reject" } } });
     const rebuild = f.agent.requests.filter((r) => r.brief.stage === "build")[1]!;
     expect(rebuild.brief.earlier.at(-1)).toMatchObject({ stage: "human", verdict: "fail", findings: [{ message: "No test covers /health." }] });
-    expect(f.log.store.read().at(-1)).toMatchObject({ type: "checkpoint-evaluated" });
+    expectAtMergeGate(f.log.store.read());
   });
 
   test("/approve at the Bounce cap Bounces once more", async () => {
@@ -136,7 +136,7 @@ describe("Orchestrator: Human requests and Reply commands", () => {
     await f.orchestrator.runUntilIdle();
 
     expect(f.log.store.read().filter((e) => e.type === "bounced").map((e) => e.data.bounce)).toEqual([1, 2, 3, 4]);
-    expect(f.log.store.read().at(-1)).toMatchObject({ type: "checkpoint-evaluated" });
+    expectAtMergeGate(f.log.store.read());
   });
 
   test("/cancel from the CLI cancels the Job and removes its Working copies", async () => {
@@ -204,7 +204,8 @@ describe("Orchestrator: Human requests and Reply commands", () => {
     g.source.push(approved(8));
     await g.orchestrator.runUntilIdle();
     g.source.push(comment(8, "/approve"));
-    await g.orchestrator.runUntilIdle();
+    // Recorded, not yet acted on: acting on it would take the Job on to the Merge gate's own request.
+    await g.orchestrator.poll();
     expect(await cli(g.home, "reject", g.onlyJob().job_id, "too", "late")).toMatchObject({ code: 1, stderr: `Job ${g.onlyJob().job_id}'s request was already answered.\n` });
   });
 
@@ -252,8 +253,8 @@ describe("Orchestrator: Human requests and Reply commands", () => {
 
     expect(f.log.jobs().map((j) => [j.issue, j.status])).toEqual([
       [7, "waiting"],
-      [8, "queued"],
+      [8, "waiting"],
     ]);
-    expect(f.log.store.read().filter((e) => e.job_id === f.log.jobs()[1]!.job_id).at(-1)).toMatchObject({ type: "checkpoint-evaluated" });
+    expectAtMergeGate(f.log.store.read().filter((e) => e.job_id === f.log.jobs()[1]!.job_id));
   });
 });

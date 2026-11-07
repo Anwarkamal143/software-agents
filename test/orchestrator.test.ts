@@ -4,7 +4,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { approved } from "./fakes/source.js";
 import { building, fail, finding, pass, ScriptedAgent } from "./fakes/agent.js";
-import { fakeFactory } from "./helpers/factory.js";
+import { fakeFactory, expectAtMergeGate } from "./helpers/factory.js";
 import { fixture } from "./helpers/config.js";
 import { agentGit } from "./helpers/git.js";
 
@@ -24,17 +24,17 @@ describe("Orchestrator: one Job end to end", () => {
       "job-approved",
       "attempt-started",
       "stage-started", "stage-passed", // triage
-      "stage-started", "branch-pushed", "stage-passed", // build
+      "stage-started", "branch-pushed", "pr-opened", "stage-passed", // build
       "stage-started", "evidence-recorded", "stage-passed", // verify
       "stage-started", "stage-passed", // review
       "stage-started", "stage-passed", // security
-      "checkpoint-evaluated",
+      "merge-gate-evaluated", "would-have-merged", "checkpoint-evaluated", "human-requested",
     ]);
     expect(f.agent.stagesRun()).toEqual(["triage", "build", "review", "security"]);
-    expect(job).toMatchObject({ repo: "acme/web-app", issue: 7, status: "queued", stage: "security", attempt: 1 });
+    expect(job).toMatchObject({ repo: "acme/web-app", issue: 7, status: "waiting", stage: "security", attempt: 1 });
 
     const events = f.log.store.read();
-    expect(events.at(-1)).toMatchObject({ type: "checkpoint-evaluated", actor: "orchestrator", data: { checkpoint: "merge-gate" } });
+    expectAtMergeGate(events, { actor: "orchestrator" });
     expect(events.find((e) => e.type === "attempt-started")?.data).toEqual({ branch: "factory/7", base: agentGit(f.remote, "rev-parse", "main") });
 
     // Every write reached the Mirror, in order, with the Job state after it.
@@ -72,7 +72,7 @@ describe("Orchestrator: one Job end to end", () => {
       findings: [{ severity: "error", file: "src/app.ts", message: "No test covers /health.", root_cause: "missing-test:health" }],
     });
     expect(secondBuild.renderedBrief).toContain("No test covers /health. (root cause: missing-test:health)");
-    expect(f.onlyJob()).toMatchObject({ status: "queued", stage: "security" });
+    expect(f.onlyJob()).toMatchObject({ status: "waiting", stage: "security" });
   });
 
   test("with bounce_cap 3, three Bounces happen and the fourth fail sends the Job to waiting", async () => {
@@ -126,7 +126,7 @@ describe("Orchestrator: one Job end to end", () => {
     expect(failed).toMatchObject({ actor: "stage:verify", data: { stage: "verify", summary: "`test -f built.txt` exited 1." } });
     expect((failed.data.output as { size: number }).size).toBeGreaterThan(0);
     expect(f.agent.requests[2]!.brief.earlier.at(-1)).toMatchObject({ stage: "verify", verdict: "fail" });
-    expect(f.log.store.read().at(-1)).toMatchObject({ type: "checkpoint-evaluated" });
+    expectAtMergeGate(f.log.store.read());
   });
 
   test("a when condition skips a Stage, and the skip is recorded", async () => {
@@ -221,6 +221,7 @@ describe("Orchestrator: one Job end to end", () => {
       ["stage-passed", "stage-started"],
       ["stage-started", "stage-passed"],
       ["branch-pushed", "stage-started"],
+      ["pr-opened", "branch-pushed"],
       ["stage-passed", "stage-started"],
       ["stage-started", "stage-passed"],
       ["evidence-recorded", "stage-started"], // verify
@@ -238,7 +239,10 @@ describe("Orchestrator: one Job end to end", () => {
       ["stage-passed", "stage-started"],
       ["stage-started", "stage-passed"],
       ["stage-passed", "stage-started"],
-      ["checkpoint-evaluated", "stage-passed"],
+      ["merge-gate-evaluated", "stage-passed"],
+      ["would-have-merged", "merge-gate-evaluated"],
+      ["checkpoint-evaluated", "would-have-merged"],
+      ["human-requested", "checkpoint-evaluated"],
     ]);
   });
 
