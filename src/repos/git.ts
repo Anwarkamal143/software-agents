@@ -33,14 +33,14 @@ export interface GitOptions {
 
 /**
  * The environment that hands git `token` for an https remote: an `Authorization` header scoped
- * to the remote's origin, as env config so it's never in argv, a remote URL or a config file.
+ * to that remote's URL, as env config so it's never in argv, a remote URL or a config file.
  * Nothing for any other remote.
  */
 export function remoteAuthEnv(remoteUrl: string, token: string): Record<string, string> {
   if (!remoteUrl.startsWith("https://")) return {};
   return {
     GIT_CONFIG_COUNT: "1",
-    GIT_CONFIG_KEY_0: `http.${new URL(remoteUrl).origin}/.extraHeader`,
+    GIT_CONFIG_KEY_0: `http.${remoteUrl}.extraHeader`,
     GIT_CONFIG_VALUE_0: `Authorization: Basic ${Buffer.from(`x-access-token:${token}`).toString("base64")}`,
   };
 }

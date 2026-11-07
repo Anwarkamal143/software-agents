@@ -2,7 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import { githubAuthFromKeychain } from "../github/auth.js";
+import { githubAuthFromKeychain, type GitHubAuth } from "../github/auth.js";
 import { GitHubClient, type Fetch } from "../github/client.js";
 import { homePaths } from "../home.js";
 import { renderSelfChecks, selfChecks, type DoctorDeps } from "../onboarding/doctor.js";
@@ -106,8 +106,9 @@ export async function doctorCommand(args: string[], io: OnboardingIo): Promise<n
   const { values } = parseArgs({ args, options: { baseline: { type: "boolean", default: false } } });
   const sandboxes = { agent: srtSandbox, check: srtSandbox, ...io.doctor?.sandboxes };
   const secrets = io.secrets ?? new OsKeychain();
-  // Asked for only when a Baseline check reaches GitHub: doctor reports missing credentials itself.
-  const auth = { token: async (repo: string | null) => (await githubAuthFromKeychain(secrets, io.fetch)).token(repo) };
+  // Read only when a Baseline check reaches GitHub, then kept: doctor reports missing credentials itself.
+  let keychainAuth: Promise<GitHubAuth> | undefined;
+  const auth: GitHubAuth = { token: async (repo) => (await (keychainAuth ??= githubAuthFromKeychain(secrets, io.fetch))).token(repo) };
   const checks = await selfChecks(
     {
       home: io.home,
