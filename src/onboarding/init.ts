@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { AppAuth, GITHUB_SECRETS, TokenAuth, type GitHubAuth } from "../github/auth.js";
-import { GitHubClient, type Fetch } from "../github/client.js";
+import { GitHubAuthError, GitHubClient, type Fetch } from "../github/client.js";
 import { homePaths } from "../home.js";
 import type { WritableSecretStore } from "../secrets/keychain.js";
 import { starterConfig } from "./config-edit.js";
@@ -63,7 +63,7 @@ export async function factoryInit(options: InitOptions, deps: InitDeps): Promise
   deps.out(`\nNext: \`factory repo add <owner/repo>\` for each Target repo, then \`factory doctor\`.\n`);
 }
 
-/** Puts GitHub credentials in the keychain unless they're there already. Returns the GitHub login that owns them. */
+/** Puts GitHub credentials in the keychain unless they're there already, or replaces an App that GitHub says no longer exists. Returns the GitHub login that owns them. */
 async function credentials(options: InitOptions, deps: InitDeps): Promise<string> {
   const [appId, privateKey, existingToken] = await Promise.all([deps.secrets.get(GITHUB_SECRETS.appId), deps.secrets.get(GITHUB_SECRETS.privateKey), deps.secrets.get(GITHUB_SECRETS.token)]);
   const api = (auth: GitHubAuth) => new GitHubClient({ auth, ...(deps.fetch && { fetch: deps.fetch }), ...(deps.githubBaseUrl && { baseUrl: deps.githubBaseUrl }), sleep: async () => {} });
@@ -84,14 +84,26 @@ async function credentials(options: InitOptions, deps: InitDeps): Promise<string
   }
   if (appId && privateKey) {
     deps.out("The Factory's GitHub App is already in the keychain.\n");
-    const app = await api(new AppAuth({ appId, privateKey, ...(deps.fetch && { fetch: deps.fetch }) })).request<{ owner?: { login: string } }>("GET", "/app");
-    if (app.status !== 200 || !app.body?.owner) throw new Error("The GitHub App in the keychain isn't accepted by GitHub: run `factory init --token`, or remove it from the keychain and run `factory init` again.");
+    const refused = new Error("The GitHub App in the keychain isn't accepted by GitHub: run `factory init --token`, or remove it from the keychain and run `factory init` again.");
+    const app = await api(new AppAuth({ appId, privateKey, ...(deps.fetch && { fetch: deps.fetch }) }))
+      .request<{ owner?: { login: string } }>("GET", "/app")
+      .catch((err: unknown) => Promise.reject(err instanceof GitHubAuthError ? refused : err));
+    if (app.status === 404) {
+      deps.out(`That App (id ${appId}) no longer exists on GitHub; creating a new one to replace it.\n`);
+      return createApp(deps);
+    }
+    if (app.status !== 200 || !app.body?.owner) throw refused;
     return app.body.owner.login;
   }
   if (existingToken) {
     deps.out("A personal token is already in the keychain; run `factory init --token` to replace it.\n");
     return tokenOwner(existingToken);
   }
+  return createApp(deps);
+}
+
+/** Creates the Factory's App through the manifest flow and stores its id and key, replacing any already there. Returns its owner. */
+async function createApp(deps: InitDeps): Promise<string> {
   const app = await deps.manifestFlow();
   await deps.secrets.set(GITHUB_SECRETS.appId, app.appId);
   await deps.secrets.set(GITHUB_SECRETS.privateKey, app.privateKey);
