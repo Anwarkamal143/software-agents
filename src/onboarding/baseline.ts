@@ -1,12 +1,16 @@
+import { resolve, type ResolvedStage } from "../config/resolve.js";
+import type { FactoryConfig } from "../config/types.js";
 import type { Clones } from "../repos/clones.js";
 import type { CheckRunner } from "../stages/check-runner.js";
 
+/** One Check Stage as a Job would run it: its commands, the hosts it may reach and the check secrets it gets. */
+export type BaselineStage = Required<Pick<ResolvedStage, "id" | "commands" | "network" | "secrets">>;
+
 export interface BaselineRequest {
   repo: string;
-  /** Each Check Stage's commands, by Check Stage name, in Pipeline order. */
-  checks: Record<string, string[]>;
-  network: string[];
-  /** Check secrets, by name, for the commands' environment. */
+  /** The Check Stages, in Pipeline order. */
+  checks: BaselineStage[];
+  /** Check secret values, by name; each Check Stage gets only those it names. */
   secrets?: Record<string, string>;
 }
 
@@ -21,20 +25,28 @@ export type BaselineResult =
  */
 export async function baselineCheck(clones: Clones, checks: CheckRunner, req: BaselineRequest): Promise<BaselineResult> {
   const head = await clones.defaultHead(req.repo);
-  for (const [check, commands] of Object.entries(req.checks)) {
+  for (const check of req.checks) {
     const copy = await clones.baselineCopy(req.repo, head);
+    const secrets = Object.fromEntries(Object.entries(req.secrets ?? {}).filter(([name]) => check.secrets.includes(name)));
     try {
       const run = await checks.run({
-        commands,
+        commands: check.commands,
         cwd: copy.dir,
-        env: { ...req.secrets, ...copy.env },
+        env: { ...secrets, ...copy.env },
         writable: [copy.env.HOME, copy.env.XDG_CACHE_HOME, copy.env.TMPDIR],
-        network: req.network,
+        network: check.network,
       });
-      if (!run.passed) return { passed: false, head, check, command: run.failed!.command, exit_code: run.failed!.exit_code, output: run.output };
+      if (!run.passed) return { passed: false, head, check: check.id, command: run.failed!.command, exit_code: run.failed!.exit_code, output: run.output };
     } finally {
       clones.removeBaselineCopy(copy.root);
     }
   }
   return { passed: true, head };
+}
+
+/** The Check Stages a repo's default Pipeline runs, each with what it gets there. */
+export function baselineStages(config: FactoryConfig, repo: string): BaselineStage[] {
+  return resolve(config, { repo, labels: [] })
+    .stages.filter((s) => s.kind === "check")
+    .map((s) => ({ id: s.id, commands: s.commands ?? [], network: s.network ?? [], secrets: s.secrets ?? [] }));
 }

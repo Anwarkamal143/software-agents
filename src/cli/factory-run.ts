@@ -71,6 +71,8 @@ export async function factoryRun(home: string, signal: AbortSignal, report: (s: 
       source,
       agent,
       checks: new SandboxedCheckRunner({ factoryHome: home }),
+      // The adapter and the check runner both confine with sandbox-runtime.
+      sandboxes: { agent: srtSandbox, check: srtSandbox },
       mirrors: config.current.state.mirrors.includes("github") ? [new GitHubMirror({ client, dir: join(paths.outbox, "github"), readyLabel, onDropped: recordDropped(log) })] : [],
       pulls: new GitHubPullRequests(client),
       artifacts,

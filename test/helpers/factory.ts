@@ -9,7 +9,7 @@ import { Orchestrator, type OrchestratorDeps } from "../../src/orchestrator/orch
 import type { JobStore } from "../../src/store/job-store.js";
 import { PrePushChecks } from "../../src/repos/prepush.js";
 import { Clones } from "../../src/repos/clones.js";
-import { SandboxedCheckRunner, type Sandbox } from "../../src/stages/check-runner.js";
+import { SandboxedCheckRunner, srtSandbox, type Sandbox } from "../../src/stages/check-runner.js";
 import { ArtifactStore } from "../../src/store/artifact-store.js";
 import { openSqliteJobStore } from "../../src/store/sqlite-job-store.js";
 import { ScriptedAgent } from "../fakes/agent.js";
@@ -26,7 +26,12 @@ import { tmpHome } from "./tmp.js";
 /** A whole Factory on fakes: real Event log, config and sandboxed Check Stages; scripted agent, fake Source, Mirror and keychain. */
 export interface FakeFactoryOptions {
   secrets?: FakeSecrets;
+  /** The Sandbox Check Stage commands run under, and the self-check asks about. Default the real one. */
   sandbox?: Sandbox;
+  /** The Sandbox the self-check asks about for agent sessions. Default the real one. */
+  agentSandbox?: Sandbox;
+  /** What the self-check asks about for Check Stages, when it isn't the Sandbox they run under. */
+  checkSandboxSelfCheck?: Sandbox;
   now?: () => Date;
   /** Wraps the Job store the Orchestrator writes to, such as to make it fail. */
   wrapStore?: (store: JobStore) => JobStore;
@@ -64,6 +69,7 @@ export function factoryAt<A extends AgentAdapter = ScriptedAgent>(home: string, 
     source,
     agent,
     checks: new SandboxedCheckRunner({ factoryHome: home, ...(opts.sandbox && { sandbox: opts.sandbox }) }),
+    sandboxes: { agent: opts.agentSandbox ?? srtSandbox, check: opts.checkSandboxSelfCheck ?? opts.sandbox ?? srtSandbox },
     secrets,
     mirrors: [mirror],
     pulls,

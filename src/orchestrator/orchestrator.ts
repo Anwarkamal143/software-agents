@@ -26,7 +26,7 @@ import { parseReplyCommand } from "../humans/commands.js";
 import type { Notifier } from "../humans/notify.js";
 import { recordMalformedReply, recordReply } from "../humans/replies.js";
 import { checkSecretKey, type SecretStore } from "../secrets/keychain.js";
-import { SandboxUnavailable, type CheckRun, type CheckRunner } from "../stages/check-runner.js";
+import { SandboxUnavailable, type CheckRun, type CheckRunner, type Sandbox } from "../stages/check-runner.js";
 import { parseStageResult, STAGE_RESULT_SCHEMA, type StageResult } from "../stages/result.js";
 import type { ArtifactStore } from "../store/artifact-store.js";
 import { attemptProgress, type AttemptProgress, type PendingAnswer } from "./progress.js";
@@ -41,6 +41,11 @@ export interface OrchestratorDeps {
   source: Source;
   agent: AgentAdapter;
   checks: CheckRunner;
+  /**
+   * What agent sessions and Check Stage commands run under. No Stage run starts until both
+   * report available (ADR 0007): the self-check, at start and before each Stage run until it passes.
+   */
+  sandboxes: { agent: Sandbox; check: Sandbox };
   mirrors: Mirror[];
   /** Every PR the Factory opens, merges or reverts goes through here. */
   pulls: PullRequests;
@@ -124,6 +129,10 @@ export class Orchestrator {
   private readonly mergeLocks = new Map<string, Promise<unknown>>();
   /** Jobs whose merge GitHub refused in this pass: the gate re-runs, but merges again only next pass. */
   private refusedThisPass = new Set<string>();
+  /** Both Sandboxes reported available, and no Stage run has found one gone since: the self-check isn't due. */
+  private sandboxesChecked = false;
+  /** When the self-check last ran (ms), so a pause for the Sandbox is looked at again only every so often. */
+  private sandboxCheckedAt: number | null = null;
 
   constructor(private readonly deps: OrchestratorDeps) {
     this.sessions = new SessionWatch({
@@ -153,6 +162,8 @@ export class Orchestrator {
     };
     try {
       await this.poll();
+      // While its pause parks every Job, only this asks again whether the Sandboxes are back.
+      if (this.pausedFor(SANDBOX_UNAVAILABLE) && this.sandboxRecheckDue()) await this.selfCheckSandboxes();
       await this.remind();
       await this.watchMerges();
       await this.showEndings();
@@ -182,6 +193,15 @@ export class Orchestrator {
         }
         const inRepo = [...running.values()].filter((r) => r.repo === job.repo).length;
         if (running.size >= this.deps.config.current.max_running || inRepo >= plan.repoLimit) continue;
+        let sandboxed: boolean;
+        try {
+          sandboxed = await this.selfCheckSandboxes();
+        } catch (err) {
+          fault(err);
+          break;
+        }
+        // Not sandboxed: the Factory is paused now, so every queued Job is parked.
+        if (!sandboxed) break;
         const done = plan
           .run()
           .catch(fault)
@@ -199,13 +219,20 @@ export class Orchestrator {
   }
 
   /**
-   * Startup after the Event log has been replayed (ADR 0010): every Stage run still marked
+   * Startup after the Event log has been replayed (ADR 0010): pauses for a missing check secret or
+   * sign-in are lifted, and the Sandbox self-check runs. Every Stage run still marked
    * running was cut off when the last Orchestrator died, so it is recorded as interrupted,
    * naming its session if it reported one; the next run resumes that session once, or reruns.
    * Jobs parked by the plan limit stay parked until it resets.
    */
   async start(): Promise<void> {
     const started = await this.record({ type: "factory-started", actor: "orchestrator" });
+    // Nothing else lifts these: a restart, after you set the secret or the key, is how they end.
+    for (const reason of RECHECKED_ON_START) {
+      const pause = this.pausedFor(reason);
+      if (pause) await this.record({ type: "factory-resumed", actor: "orchestrator", caused_by: pause.id });
+    }
+    await this.selfCheckSandboxes();
     // Running Jobs, and Jobs whose Stage run was held for re-approval when the Orchestrator died.
     for (const job of this.deps.log.jobs().filter((j) => j.status === "running" || (j.status === "waiting" && j.reason === "reapproval"))) {
       const events = this.deps.log.eventsFor(job.job_id);
@@ -233,10 +260,52 @@ export class Orchestrator {
     this.stopping.abort();
   }
 
+  /**
+   * The Sandbox self-check (ADR 0007): true once both Sandboxes report available, which lifts a
+   * `sandbox-unavailable` pause. Otherwise the Factory pauses (once), and no Stage run starts.
+   * Once passed it isn't asked again until a Stage run finds a Sandbox gone, which pauses the
+   * Factory and makes it due again.
+   */
+  private async selfCheckSandboxes(): Promise<boolean> {
+    if (this.sandboxesChecked) return true;
+    const ownPause = this.pausedFor(SANDBOX_UNAVAILABLE);
+    this.sandboxCheckedAt = this.now().getTime();
+    try {
+      await this.deps.sandboxes.agent.ready();
+      await this.deps.sandboxes.check.ready();
+    } catch (err) {
+      if (!(err instanceof SandboxUnavailable)) throw err;
+      if (!ownPause) await this.record({ type: "factory-paused", actor: "orchestrator", data: { reason: SANDBOX_UNAVAILABLE, message: err.message } });
+      return false;
+    }
+    this.sandboxesChecked = true;
+    if (ownPause) await this.record({ type: "factory-resumed", actor: "orchestrator", caused_by: ownPause.id });
+    return true;
+  }
+
+  /**
+   * While paused for the Sandbox, it is asked again at most every `SANDBOX_RECHECK_MS`: one that
+   * reports available but fails each Stage run (the agent SDK's own sandbox can only be asked by
+   * starting a session) costs one Stage run per interval, not a loop.
+   */
+  private sandboxRecheckDue(): boolean {
+    return this.sandboxCheckedAt === null || this.now().getTime() - this.sandboxCheckedAt >= SANDBOX_RECHECK_MS;
+  }
+
+  /** The `factory-paused` event in effect for `reason`, if any. */
+  private pausedFor(reason: string): FactoryEvent | null {
+    return this.deps.log.factoryPauses().find((p) => p.type === "factory-paused" && p.data.reason === reason) ?? null;
+  }
+
+  /** The plan-limit pause in effect, if any. */
+  private planLimitPause(): FactoryEvent | null {
+    return this.deps.log.factoryPauses().find((p) => p.type === "plan-limit-hit") ?? null;
+  }
+
   /** A plan limit parks the Factory until its reset time (ADR 0010); then Jobs carry on. */
   private async releasePlanLimit(): Promise<void> {
-    const pause = this.deps.log.factoryPause();
-    if (pause?.type !== "plan-limit-hit") return;
+    const pause = this.planLimitPause();
+    if (!pause) return;
     const resetsAt = typeof pause.data.resets_at === "string" ? Date.parse(pause.data.resets_at) : Date.parse(pause.at) + PLAN_LIMIT_FALLBACK_MS;
     if (this.now().getTime() < resetsAt) return;
     await this.record({ type: "plan-limit-reset", actor: "orchestrator", caused_by: pause.id });
@@ -244,7 +313,7 @@ export class Orchestrator {
 
   /** When the plan limit is reached, or past 90% of it, no new Stage run starts until it resets. */
   private async planLimitHit(info: RateLimitInfo, caused_by: string | null | undefined): Promise<void> {
-    if (this.deps.log.factoryPause()?.type === "plan-limit-hit") return;
+    if (this.planLimitPause()) return;
     await this.record({
       type: "plan-limit-hit",
       actor: "orchestrator",
@@ -277,15 +346,13 @@ export class Orchestrator {
     } catch (err) {
       if (!(err instanceof SourceCredentialsRefused)) throw err;
       // A Factory fault: no new Stage run starts until the credentials work again (ADR 0010).
-      if (this.deps.log.factoryPause()?.data.reason !== SOURCE_CREDENTIALS) {
+      if (!this.pausedFor(SOURCE_CREDENTIALS)) {
         await this.record({ type: "factory-paused", actor: "orchestrator", data: { reason: SOURCE_CREDENTIALS, message: err.message } });
       }
       return;
     }
-    const pause = this.deps.log.factoryPause();
-    if (pause?.type === "factory-paused" && pause.data.reason === SOURCE_CREDENTIALS) {
-      await this.record({ type: "factory-resumed", actor: "orchestrator", caused_by: pause.id });
-    }
+    const pause = this.pausedFor(SOURCE_CREDENTIALS);
+    if (pause) await this.record({ type: "factory-resumed", actor: "orchestrator", caused_by: pause.id });
     const { items, cursor } = polled;
     for (const item of items) await this.admit(item);
     try {
@@ -864,7 +931,7 @@ export class Orchestrator {
       });
     } catch (err) {
       // Never run unsandboxed: the check fails and the Factory pauses (ADR 0007, ADR 0010).
-      if (err instanceof SandboxUnavailable) return { kind: "fault", reason: "sandbox-unavailable", message: err.message };
+      if (err instanceof SandboxUnavailable) return { kind: "fault", reason: SANDBOX_UNAVAILABLE, message: err.message };
       throw err;
     } finally {
       this.deps.clones.removeCheckStageCopy(dir);
@@ -896,6 +963,11 @@ export class Orchestrator {
 
   /** A Factory fault: pause the whole Factory, then end the Stage run, so the Job parks until it resumes. */
   private async fault(stage: ResolvedStage, fault: Extract<StageOutcome, { kind: "fault" }>, run: RunEnvelope): Promise<void> {
+    if (fault.reason === SANDBOX_UNAVAILABLE) {
+      // The self-check is due again, from now: the pause lifts once both Sandboxes are back.
+      this.sandboxesChecked = false;
+      this.sandboxCheckedAt = this.now().getTime();
+    }
     const paused = await this.record({ type: "factory-paused", actor: "orchestrator", caused_by: run.caused_by, data: { reason: fault.reason, message: fault.message } });
     await this.record({ ...run, actor: "orchestrator", caused_by: paused.id, type: "stage-interrupted", data: { stage: stage.id, reason: fault.reason } });
   }
@@ -1173,6 +1245,19 @@ export class Orchestrator {
     }
   }
 }
+
+/** The `factory-paused` reason while either Sandbox can't confine commands. */
+const SANDBOX_UNAVAILABLE = "sandbox-unavailable" as const;
+
+/**
+ * Factory faults a start lifts: the Stage run that hit one checks again before anything is spent
+ * (a check secret before its commands run, the sign-in before the model's first turn), and pauses
+ * again if it's still wrong.
+ */
+export const RECHECKED_ON_START = ["check-secret-missing", "sign-in-mismatch"] as const;
+
+/** How often a pause for the Sandbox is looked at again. */
+const SANDBOX_RECHECK_MS = 5 * 60_000;
 
 /** The `factory-paused` reason while the Source refuses the Factory's credentials. */
 const SOURCE_CREDENTIALS = "source-credentials";

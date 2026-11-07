@@ -63,13 +63,21 @@ const MOVES: Record<string, Move> = {
 };
 
 /**
- * Factory-wide events that stop new Stage runs, and the event that releases them.
- * Queued Jobs park at once; running ones finish their Stage run and park then (ADR 0004).
+ * Factory-wide events that stop new Stage runs, and the Job reason each gives; `plan-limit-reset`
+ * and `factory-resumed` lift them. Queued Jobs park at once; running ones finish their Stage run and park then (ADR 0004).
  */
-const FACTORY_PAUSES: Record<string, { reason: string; releasedBy: string }> = {
-  "plan-limit-hit": { reason: "plan-limit", releasedBy: "plan-limit-reset" },
-  "factory-paused": { reason: "factory-paused", releasedBy: "factory-resumed" },
+const FACTORY_PAUSES: Record<string, { reason: string }> = {
+  "plan-limit-hit": { reason: "plan-limit" },
+  "factory-paused": { reason: "factory-paused" },
 };
+
+/** The Job reasons a Factory-wide pause gives. */
+const PAUSE_REASONS = new Set(Object.values(FACTORY_PAUSES).map((p) => p.reason));
+
+/** Pauses of one kind replace each other: the plan limit, or `factory-paused` for one reason. */
+function pauseKind(event: FactoryEvent): string {
+  return event.type === "factory-paused" ? `factory-paused:${String(event.data.reason)}` : event.type;
+}
 
 /**
  * Folds the Event log into Job states. Feed it events in seq order; it never
@@ -77,10 +85,11 @@ const FACTORY_PAUSES: Record<string, { reason: string; releasedBy: string }> = {
  */
 export class JobProjection {
   private readonly states = new Map<string, JobState>();
-  /** Reason of the Factory-wide pause in effect, if any. */
-  private factoryPause: string | null = null;
-  /** The event that started it. */
-  private factoryPauseEvent: FactoryEvent | null = null;
+  /**
+   * The Factory-wide pauses in effect, oldest first: one per kind (a plan limit, or a
+   * `factory-paused` per reason). Jobs stay parked until the last is lifted.
+   */
+  private active: FactoryEvent[] = [];
 
   apply(event: FactoryEvent): void {
     if (event.job_id === null) return this.applyFactoryWide(event);
@@ -112,9 +121,10 @@ export class JobProjection {
       job.resumed = move.to === "queued" && (was === "waiting" || was === "paused" || (job.resumed && was === "queued"));
       job.status = move.to;
       job.reason = move.reason?.(event.data) ?? null;
-      if (job.status === "queued" && this.factoryPause) {
+      const parked = this.parkedFor();
+      if (job.status === "queued" && parked) {
         job.status = "paused";
-        job.reason = this.factoryPause;
+        job.reason = parked;
       }
     }
     if (event.type === "attempt-started") {
@@ -128,9 +138,14 @@ export class JobProjection {
     job.updated_at = event.at;
   }
 
-  /** The `plan-limit-hit` or `factory-paused` event in effect, or null when the Factory isn't paused. */
+  /** The latest `plan-limit-hit` or `factory-paused` event in effect, or null when the Factory isn't paused. */
   pause(): FactoryEvent | null {
-    return this.factoryPauseEvent;
+    return this.active.at(-1) ?? null;
+  }
+
+  /** Every pause in effect, oldest first. */
+  pauses(): FactoryEvent[] {
+    return [...this.active];
   }
 
   get(job_id: string): JobState | undefined {
@@ -155,26 +170,39 @@ export class JobProjection {
 
   private applyFactoryWide(event: FactoryEvent): void {
     const pause = FACTORY_PAUSES[event.type];
-    const release = Object.values(FACTORY_PAUSES).find((p) => p.releasedBy === event.type);
     if (pause) {
-      this.factoryPause = pause.reason;
-      this.factoryPauseEvent = event;
-    } else if (release && this.factoryPause === release.reason) {
-      this.factoryPause = null;
-      this.factoryPauseEvent = null;
-    }
+      // The same kind again replaces the one in effect; other kinds stay.
+      this.active = this.active.filter((p) => pauseKind(p) !== pauseKind(event)).concat(event);
+    } else if (event.type === "plan-limit-reset") {
+      this.active = this.active.filter((p) => p.type !== "plan-limit-hit");
+    } else if (event.type === "factory-resumed") {
+      // It lifts the pause it names; one naming none (or one already gone) lifts every factory-paused.
+      const named = this.active.some((p) => p.id === event.caused_by);
+      this.active = this.active.filter((p) => (named ? p.id !== event.caused_by : p.type !== "factory-paused"));
+    } else return;
+    const parked = this.parkedFor();
     for (const job of this.states.values()) {
       if (pause && job.status === "queued") {
         job.status = "paused";
         job.reason = pause.reason;
-      } else if (release && job.status === "paused" && job.reason === release.reason) {
-        job.status = "queued";
-        job.reason = null;
-        job.resumed = true;
+      } else if (!pause && job.status === "paused" && PAUSE_REASONS.has(job.reason ?? "") && job.reason !== parked) {
+        // Its pause was lifted: it carries on, or stays parked by the one still in effect.
+        if (parked) job.reason = parked;
+        else {
+          job.status = "queued";
+          job.reason = null;
+          job.resumed = true;
+        }
       } else continue;
       job.last_seq = event.seq;
       job.updated_at = event.at;
     }
+  }
+
+  /** The Job reason of the latest pause in effect, or null. */
+  private parkedFor(): string | null {
+    const latest = this.active.at(-1);
+    return latest ? FACTORY_PAUSES[latest.type]!.reason : null;
   }
 }
 

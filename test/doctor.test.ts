@@ -121,7 +121,10 @@ describe("factory doctor --baseline", () => {
     expect((await run(false)).find((c) => c.name === "baseline:acme/web-app")).toMatchObject({ ok: true });
     expect((await run(true)).find((c) => c.name === "baseline:acme/web-app")).toMatchObject({ ok: false, detail: expect.stringMatching(/^Check Stage "verify": `node --test` exited 1 on [0-9a-f]{7}\.$/) });
     // A check secret counts only under the repo's own keychain name.
-    const withSecret = config.replace('commands: { verify: ["node --test"] }', 'commands: { verify: ["node --test"] }\n    check_secrets: [DATABASE_URL]');
+    // A check secret counts only for the Check Stages that name it.
+    const withSecret = config
+      .replace("verify: { kind: check, run: verify }", "verify: { kind: check, run: verify, secrets: [DATABASE_URL] }")
+      .replace('commands: { verify: ["node --test"] }', 'commands: { verify: ["node --test"] }\n    check_secrets: [DATABASE_URL]');
     const home = healthyHome(withSecret);
     const remote = nodeRemote(join(home, "github"));
     const baselineDeps = (secrets: Record<string, string>) =>

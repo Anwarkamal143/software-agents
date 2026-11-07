@@ -12,7 +12,7 @@ import { checkSecretKey, type SecretStore } from "../secrets/keychain.js";
 import { resolveSecretRef } from "../secrets/refs.js";
 import type { CheckRunner, Sandbox } from "../stages/check-runner.js";
 import { openSqliteJobStore } from "../store/sqlite-job-store.js";
-import { baselineCheck } from "./baseline.js";
+import { baselineCheck, baselineStages } from "./baseline.js";
 import { GITLEAKS_VERSION, gitleaksVersion } from "./gitleaks.js";
 
 /** One self-check: by name, what it found, and if it failed, how to fix it. */
@@ -149,28 +149,18 @@ export async function selfChecks(deps: DoctorDeps, { baseline = false } = {}): P
   if (baseline && deps.baseline) {
     for (const repo of (config as FactoryConfig | null)?.repos ?? []) {
       await check(`baseline:${repo.name}`, `Fix ${repo.name}'s default branch so its Check Stages pass: every Job there would fail.`, async () => {
+        const stages = baselineStages(config!, repo.name);
         const secrets: Record<string, string> = {};
-        for (const name of repo.check_secrets ?? []) {
+        for (const name of new Set(stages.flatMap((s) => s.secrets))) {
           const value = await deps.secrets.get(checkSecretKey(repo.name, name));
           if (value === null) throw new Error(`Check secret ${name} isn't in the keychain (\`factory secret set ${repo.name} ${name}\`).`);
           secrets[name] = value;
         }
-        const result = await baselineCheck(deps.baseline!.clones, deps.baseline!.checks, { repo: repo.name, checks: checksOf(config!, repo.name), network: repo.network ?? [], secrets });
+        const result = await baselineCheck(deps.baseline!.clones, deps.baseline!.checks, { repo: repo.name, checks: stages, secrets });
         if (!result.passed) throw new Error(`Check Stage "${result.check}": \`${result.command}\` exited ${result.exit_code} on ${result.head.slice(0, 7)}.`);
         return `Green on ${result.head.slice(0, 7)}.`;
       });
     }
-  }
-  return out;
-}
-
-/** The Check Stages a repo's default Pipeline runs, with the commands each runs there. */
-function checksOf(config: FactoryConfig, name: string): Record<string, string[]> {
-  const repo = config.repos.find((r) => r.name === name)!;
-  const out: Record<string, string[]> = {};
-  for (const id of config.pipelines[repo.default_pipeline]?.stages ?? []) {
-    const stage = config.stages[id];
-    if (stage?.kind === "check") out[id] = repo.commands?.[stage.run] ?? [];
   }
   return out;
 }

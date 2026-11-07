@@ -113,6 +113,20 @@ describe("SandboxedCheckRunner", () => {
     expect(run.violations.some((v) => v.includes(`localhost:${port}`))).toBe(true);
   });
 
+  test("a .env file anywhere in the copy is unreadable, including one an earlier command wrote", async () => {
+    // On Linux the pattern is expanded when each command is wrapped, so it covers what is on disk by then.
+    const { factoryHome, userHome, cwd } = layout();
+    mkdirSync(join(cwd, "packages", "api"), { recursive: true });
+    writeFileSync(join(cwd, "packages", "api", ".env.production"), "API_KEY=nested\n");
+    const runner = new SandboxedCheckRunner({ factoryHome, userHome });
+    const probe = (label: string, cmd: string) => `(${cmd}) >/dev/null 2>&1 && echo "${label}: yes" || echo "${label}: no"`;
+    const run = await runner.run({
+      cwd,
+      commands: ["echo GENERATED=1 > .env.test", [probe("read nested .env", "cat packages/api/.env.production"), probe("read generated .env", "cat .env.test")].join("; ")],
+    });
+    expect(run.output.split("\n").filter((l) => l.startsWith("read "))).toEqual(["read nested .env: no", "read generated .env: no"]);
+  });
+
   test("with the sandbox unavailable, nothing runs and the run throws SandboxUnavailable", async () => {
     const { factoryHome, userHome, cwd } = layout();
     const runner = new SandboxedCheckRunner({

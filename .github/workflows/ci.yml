@@ -47,3 +47,27 @@ jobs:
           if [ -z "$LIVE_KEY" ]; then echo "::warning title=Security suite skipped::No ANTHROPIC_API_KEY secret, so the live hostile-fixture suite (including the Linux fail-closed SDK case) did not run."; exit 0; fi
           ANTHROPIC_API_KEY="$LIVE_KEY" FACTORY_LIVE_SDK=1 npx vitest run test/sdk-isolation.live.test.ts
       - run: npm run build
+
+  # #43: on a runner that still restricts unprivileged user namespaces (Ubuntu 24.04's AppArmor
+  # default, no bwrap profile), bubblewrap is installed but can't start. The Sandbox must report
+  # unavailable, so the Factory pauses, rather than every check failing as if its command had.
+  sandbox-userns-restricted:
+    name: Sandbox fails closed (user namespaces restricted)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install Sandbox dependencies, without lifting the restriction
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap socat ripgrep
+          if bwrap --ro-bind / / --unshare-user --unshare-net true 2>/dev/null; then
+            echo "::error::bwrap can create user namespaces here, so this job wouldn't test the restricted case."; exit 1
+          fi
+          echo "bwrap can't create user namespaces, as intended"
+      - run: npm ci
+      - run: npm run fetch:gitleaks
+      - run: FACTORY_EXPECT_USERNS_RESTRICTED=1 npx vitest run test/sandbox-linux.test.ts -t "user namespaces restricted"

@@ -193,6 +193,17 @@
         "properties": {
           "kind": { "const": "check" },
           "run": { "type": "string", "minLength": 1, "description": "Name of the Target repo's `commands` list to run." },
+          "network": {
+            "description": "Lets the commands reach the Target repo's `network` hosts. Off by default: no network.",
+            "type": "boolean",
+            "default": false
+          },
+          "secrets": {
+            "description": "Which of the Target repo's `check_secrets` the commands get, as env vars of the same name. None by default.",
+            "type": "array",
+            "items": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+            "uniqueItems": true
+          },
           "on_fail": { "type": "string" },
           "when": { "$ref": "#/definitions/when" }
         }
@@ -209,9 +220,13 @@
           "type": "object",
           "additionalProperties": { "type": "array", "items": { "type": "string", "minLength": 1 } }
         },
-        "network": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "network": {
+          "description": "Hosts this repo's Check Stages that enable `network`, and Agent Stages that write the branch, may reach from the Sandbox.",
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
         "check_secrets": {
-          "description": "Names of this repo's check secrets, set with `factory secret set <repo> <NAME>` and kept in the keychain per repo. Each Check Stage gets them as env vars of the same name.",
+          "description": "Names of this repo's check secrets, set with `factory secret set <repo> <NAME>` and kept in the keychain per repo. A Check Stage gets those its `secrets` names, as env vars of the same name. PATH, HOME, XDG_CONFIG_HOME, XDG_CACHE_HOME, npm_config_cache and TMPDIR are refused: the Factory sets them for every check.",
           "type": "array",
           "items": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" }
         },

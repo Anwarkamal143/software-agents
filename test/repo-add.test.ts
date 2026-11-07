@@ -101,7 +101,8 @@ describe("factory repo add", () => {
       expect.objectContaining({ name: "acme/web-app", default_pipeline: "acme/web-app", commands: { test: ["npm test"], lint: ["npm run lint"], typecheck: ["npm run typecheck"] }, network: ["registry.npmjs.org"] }),
     ]);
     expect(loaded.config.pipelines["acme/web-app"]).toEqual({ stages: ["triage", "build", "test", "lint", "typecheck", "review", "security"] });
-    expect(loaded.config.stages.lint).toEqual({ kind: "check", run: "lint", on_fail: "build" });
+    // The repo has hosts, so its Check Stages get the network (ADR 0007).
+    expect(loaded.config.stages.lint).toEqual({ kind: "check", run: "lint", on_fail: "build", network: true });
     // Comments in factory.yaml survive.
     expect(s.config()).toContain("# GitHub logins allowed to approve Jobs");
     expect(s.gh.repoLabels.get("acme/web-app")!.map((l) => l.name)).toEqual([

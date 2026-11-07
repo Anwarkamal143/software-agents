@@ -58,6 +58,21 @@ describe("factory status", () => {
     expect(stdout.split("\n")[0]).toBe("The Factory is paused (sandbox-unavailable): bubblewrap is not installed");
   });
 
+  test("lists every pause in effect, and says a restart lifts one for a missing check secret", async () => {
+    const home = homeWithJobs();
+    const store = openSqliteJobStore(join(home, "factory.db"));
+    store.append({ type: "factory-paused", actor: "orchestrator", data: { reason: "sandbox-unavailable", message: "bubblewrap is not installed" } });
+    store.append({ type: "factory-paused", actor: "orchestrator", data: { reason: "check-secret-missing", message: "Check secret STRIPE_KEY isn't in the keychain." } });
+    store.close();
+
+    const { stdout } = await cli(home, "status");
+
+    expect(stdout.split("\n").slice(0, 2)).toEqual([
+      "The Factory is paused (sandbox-unavailable): bubblewrap is not installed",
+      "The Factory is paused (check-secret-missing): Check secret STRIPE_KEY isn't in the keychain. Once it's fixed, restart the Factory.",
+    ]);
+  });
+
   test("says until when the plan limit parks the Factory", async () => {
     const home = homeWithJobs();
     const store = openSqliteJobStore(join(home, "factory.db"));
@@ -179,7 +194,7 @@ describe("factory onboarding commands", () => {
 
     const r = await run(home, ["secret", "set", "acme/web-app", "DATABASE_URL"], { secrets, readStdin: async () => "postgres://x\n" });
 
-    expect(r).toMatchObject({ code: 0, stdout: "Stored DATABASE_URL in the keychain. acme/web-app's Check Stages get it as $DATABASE_URL.\n" });
+    expect(r).toMatchObject({ code: 0, stdout: "Stored DATABASE_URL in the keychain for acme/web-app. No Check Stage gets it yet: name it in a Check Stage's secrets in factory.yaml.\n" });
     expect(await secrets.get("check.acme.web-app.DATABASE_URL")).toBe("postgres://x");
     expect((await run(home, ["secret", "set", "acme/web-app"])).code).toBe(2);
   });

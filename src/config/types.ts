@@ -61,6 +61,10 @@ export interface CheckStage {
   kind: "check";
   /** Which of the Target repo's `commands` lists to run. */
   run: string;
+  /** Lets the commands reach the Target repo's `network` hosts. Default false: no network (ADR 0007). */
+  network?: boolean;
+  /** Which of the Target repo's `check_secrets` the commands get, as env vars of the same name. Default none. */
+  secrets?: string[];
   on_fail?: string;
   when?: StageCondition;
 }
@@ -77,9 +81,9 @@ export interface TargetRepo {
   name: string;
   default_pipeline: string;
   commands?: Record<string, string[]>;
-  /** Domains this repo's Check Stages, and Tool profiles that enable network, may reach from the Sandbox. */
+  /** Domains this repo's Check Stages that enable `network`, and Tool profiles that enable it, may reach from the Sandbox. */
   network?: string[];
-  /** Names of this repo's check secrets, set with `factory secret set` and kept in the keychain per repo. Each Check Stage gets them as env vars of the same name. */
+  /** Names of this repo's check secrets, set with `factory secret set` and kept in the keychain per repo. A Check Stage gets those its `secrets` names, as env vars of the same name. */
   check_secrets?: string[];
   max_running?: number;
   /** How the Factory merges this repo's PRs. Default squash. */

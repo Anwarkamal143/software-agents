@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { loadConfig } from "../config/load.js";
+import type { FactoryConfig } from "../config/types.js";
 import type { GitHubClient } from "../github/client.js";
 import { homePaths } from "../home.js";
 import { SOURCE_CURSOR } from "../orchestrator/orchestrator.js";
@@ -8,7 +9,7 @@ import { seedRepoCursor } from "../source/github.js";
 import { checkSecretKey, type WritableSecretStore } from "../secrets/keychain.js";
 import type { CheckRunner } from "../stages/check-runner.js";
 import type { JobStore } from "../store/job-store.js";
-import { baselineCheck } from "./baseline.js";
+import { baselineCheck, baselineStages } from "./baseline.js";
 import { addRepo, parseRepoEntry, renderRepoEntry, repoEntry, type RepoEntry } from "./config-edit.js";
 import { ensureLabels } from "./labels.js";
 import { proposeRepo } from "./propose.js";
@@ -74,7 +75,7 @@ export async function repoAdd(name: string, options: RepoAddOptions, deps: RepoA
 
   // Nothing is written until you confirm, and the confirmed entry must pass the config check.
   let problems: string[] = [];
-  let updated: string;
+  let updated: { text: string; config: FactoryConfig };
   for (;;) {
     const answer = await deps.confirm(renderRepoEntry(entry), problems);
     if (answer.kind === "no") {
@@ -91,7 +92,7 @@ export async function repoAdd(name: string, options: RepoAddOptions, deps: RepoA
     }
     const added = addRepo(text, entry);
     if (added.ok) {
-      updated = added.text;
+      updated = added;
       break;
     }
     problems = added.problems;
@@ -108,7 +109,7 @@ export async function repoAdd(name: string, options: RepoAddOptions, deps: RepoA
   if (options.skipBaseline) deps.out("Skipping the Baseline check (--skip-baseline).\n");
   else {
     deps.out(`Running the Baseline check on ${name}'s default branch (${head.slice(0, 7)})…\n`);
-    const baseline = await baselineCheck(deps.clones, deps.checks, { repo: name, checks: entry.repo.commands ?? {}, network: entry.repo.network ?? [], secrets });
+    const baseline = await baselineCheck(deps.clones, deps.checks, { repo: name, checks: baselineStages(updated.config, name), secrets });
     if (!baseline.passed) {
       deps.out(
         `Refused: the Baseline check failed. Check Stage "${baseline.check}": \`${baseline.command}\` exited ${baseline.exit_code}.\n` +
@@ -130,7 +131,7 @@ export async function repoAdd(name: string, options: RepoAddOptions, deps: RepoA
   } finally {
     store.close();
   }
-  writeFileSync(`${path}.tmp`, updated, { mode: 0o600 });
+  writeFileSync(`${path}.tmp`, updated.text, { mode: 0o600 });
   renameSync(`${path}.tmp`, path);
   deps.out(`Added ${name} to factory.yaml. ${options.backfill ? "Issues already labelled" : "Issues labelled"} ${readyLabel} by someone on humans become Jobs at the next poll.\n`);
   return "added";
