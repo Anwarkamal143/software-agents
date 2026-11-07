@@ -8,6 +8,7 @@ const brief = (over: Partial<StageBrief> = {}): StageBrief => ({
   repo: "acme/web-app",
   issue: { number: 7, title: "Add a /health endpoint", body: "It should return 200." },
   branch: "factory/7",
+  base: "b45e0000",
   workingCopy: "/factory/work/job-1/a1/repo",
   attempt: 1,
   bounce: 0,
@@ -45,6 +46,7 @@ describe("renderBrief", () => {
     expect(text).toContain("Stage: build (instructions: factory:build, tools: write-branch)");
     expect(text).toContain("Target repo: acme/web-app, branch factory/7, Attempt 2, Bounce 1");
     expect(text).toContain("Working copy: /factory/work/job-1/a1/repo (commit here; the Orchestrator checks and pushes your commits)");
+    expect(text).toContain("Base: b45e0000 (the default-branch commit this Attempt started from; the change so far is `git diff b45e0000...HEAD`)");
     expect(text).toContain("## Target repo conventions\nUse pnpm. Tests live next to code.");
   });
 

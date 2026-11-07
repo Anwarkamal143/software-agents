@@ -1,15 +1,14 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { query as sdkQuery, type CanUseTool, type HookCallback, type Options, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { ToolProfile } from "../config/types.js";
 import { SandboxUnavailable, srtSandbox, type Sandbox } from "../stages/check-runner.js";
 import type { AgentAdapter, AgentRunOutcome, AgentRunRequest, MeasuredFacts } from "./adapter.js";
 import { checkToolCall } from "./guards.js";
+import { stageInstructions } from "./plugin.js";
 import { Transcripts } from "./transcript.js";
 
-/** The Factory plugin shipped with the package: `plugin/` beside `src/` and `dist/`. */
-export const FACTORY_PLUGIN_DIR = fileURLToPath(new URL("../../plugin", import.meta.url));
+export { FACTORY_PLUGIN_DIR } from "./plugin.js";
 
 /** The SDK's `query()`, or a stand-in that yields the same messages. */
 export type QueryFn = (params: { prompt: string; options?: Options }) => AsyncIterable<SDKMessage>;
@@ -220,6 +219,9 @@ export function sessionOptions(request: AgentRunRequest, ctx: { home: string; us
     mcpServers: {},
     managedSettings: { disableAllHooks: true },
     plugins: [{ type: "local", path: ctx.pluginDir }],
+    // The Stage's own instructions, always in force; no Skill listing, so it can't wander into another Stage's.
+    systemPrompt: { type: "preset", preset: "claude_code", append: stageInstructions(request.brief.instructions, ctx.pluginDir) },
+    skills: [],
     permissionMode: "default",
     allowedTools: TOOLS[profile],
     disallowedTools: DISALLOWED,

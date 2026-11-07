@@ -15,13 +15,13 @@ import { runFactory } from "../orchestrator/foreground.js";
 import { Clones } from "../repos/clones.js";
 import { PrePushChecks } from "../repos/prepush.js";
 import { OsKeychain, type SecretStore } from "../secrets/keychain.js";
+import { resolveSecretRef } from "../secrets/refs.js";
 import { GitHubSource } from "../source/github.js";
-import { SandboxedCheckRunner } from "../stages/check-runner.js";
+import { renderSelfChecks, selfChecks } from "../onboarding/doctor.js";
+import { SandboxedCheckRunner, srtSandbox } from "../stages/check-runner.js";
 import { ArtifactStore } from "../store/artifact-store.js";
 import { openSqliteJobStore } from "../store/sqlite-job-store.js";
 
-/** Where `factory init` pins gitleaks in the Factory home (ADR 0011). */
-const GITLEAKS = (home: string) => join(home, "tools", "gitleaks");
 
 /**
  * `factory run`: the foreground Orchestrator, wired to the real Job store, keychain, GitHub
@@ -30,6 +30,9 @@ const GITLEAKS = (home: string) => join(home, "tools", "gitleaks");
 export async function factoryRun(home: string, signal: AbortSignal, report: (s: string) => void, secrets: SecretStore = new OsKeychain()): Promise<void> {
   const paths = homePaths(home);
   if (!existsSync(paths.config)) throw new Error(`No config at ${paths.config}: run \`factory init\` first.`);
+  // The same self-checks as `factory doctor`, at every start (ADR 0011): nothing runs on a machine that fails one.
+  const failed = (await selfChecks({ home, secrets, sandboxes: { agent: srtSandbox, check: srtSandbox } })).filter((c) => !c.ok);
+  if (failed.length) throw new Error(`The Factory can't start: ${failed.length} self-check${failed.length === 1 ? "" : "s"} failed.\n${renderSelfChecks(failed)}`);
   const config = ConfigHolder.open(paths.config);
   const store = openSqliteJobStore(paths.jobStore);
   try {
@@ -40,7 +43,7 @@ export async function factoryRun(home: string, signal: AbortSignal, report: (s: 
       client,
       config: () => ({ repos: config.current.repos.map((r) => r.name), humans: config.current.humans, readyLabel: readyLabel() }),
     });
-    const apiKey = () => credential(config.current.agent.api_key, secrets);
+    const apiKey = () => resolveSecretRef(config.current.agent.api_key, secrets);
     const agent = new ClaudeAdapter({
       home,
       signIn: config.current.agent.auth,
@@ -71,7 +74,7 @@ export async function factoryRun(home: string, signal: AbortSignal, report: (s: 
       pulls: new GitHubPullRequests(client),
       artifacts,
       clones,
-      prePush: new PrePushChecks(home, { gitleaks: GITLEAKS(home) }),
+      prePush: new PrePushChecks(home, { gitleaks: paths.gitleaks }),
       secrets,
       notifier: new OsNotifier(),
     });
@@ -81,13 +84,4 @@ export async function factoryRun(home: string, signal: AbortSignal, report: (s: 
   } finally {
     store.close();
   }
-}
-
-/** A `${env:NAME}` or `keychain:NAME` reference, resolved; null if unset. */
-async function credential(ref: string | undefined, secrets: SecretStore): Promise<string | null> {
-  if (!ref) return null;
-  const env = /^\$\{env:([A-Za-z_][A-Za-z0-9_]*)\}$/.exec(ref);
-  if (env) return process.env[env[1]!] ?? null;
-  if (ref.startsWith("keychain:")) return secrets.get(ref.slice("keychain:".length));
-  return null;
 }

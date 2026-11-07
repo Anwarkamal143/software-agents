@@ -32,7 +32,7 @@ function setup() {
   const request = (prompt: string): AgentRunRequest => ({
     job_id: "job-live",
     stage_run_id: `run-${Date.now()}`,
-    brief: { stage: "build", tools: "write-branch" } as AgentRunRequest["brief"],
+    brief: { stage: "build", instructions: "factory:build", tools: "write-branch" } as AgentRunRequest["brief"],
     renderedBrief: prompt,
     model: MODEL,
     workingCopy: { dir: fixture.repo, env },

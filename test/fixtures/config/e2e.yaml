@@ -10,7 +10,7 @@ stages:
   security: { kind: agent, instructions: factory:security-review, tools: read-only, on_fail: build }
   ui-review:
     kind: agent
-    instructions: factory:ui-review
+    instructions: factory:review
     tools: read-only
     when: { labels: [ui], paths: ["src/ui/**"] }
 pipelines:

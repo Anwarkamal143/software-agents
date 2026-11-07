@@ -83,6 +83,18 @@ describe("loadConfig: layer rules", () => {
   });
 });
 
+describe("loadConfig: Stage instructions", () => {
+  test("an Agent Stage's instructions must name a skill the Factory plugin has", () => {
+    const r = loadConfig(fixture("minimal.yaml").replace("instructions: factory:review", "instructions: factory:ui-review"));
+    expect(r.ok ? [] : r.problems).toEqual(['Stage "review": the Factory plugin has no instructions factory:ui-review.']);
+  });
+
+  test("so must a Target repo's override of them", () => {
+    const r = loadConfig(fixture("minimal.yaml").replace(/( {2}- name: [^\n]+\n)/, "$1    stage_overrides: { review: { instructions: be-nice } }\n"));
+    expect(r.ok ? [] : r.problems).toEqual(['Target repo acme/web-app: stage_overrides.review: the Factory plugin has no instructions be-nice.']);
+  });
+});
+
 describe("loadConfig: merge_method", () => {
   test("only squash, merge or rebase", () => {
     const with_ = (m: string) => loadConfig(fixture("minimal.yaml").replace(/( {2}- name: [^\n]+\n)/, `$1    merge_method: ${m}\n`));

@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { loadConfig } from "../config/load.js";
 import { printLogs } from "./logs.js";
+import { doctorCommand, initCommand, repoCommand, secretCommand, type OnboardingIo } from "./onboarding.js";
 import { factoryRun } from "./factory-run.js";
 import { parseReplyCommand } from "../humans/commands.js";
 import { recordReply, type IgnoredWhy } from "../humans/replies.js";
@@ -12,15 +13,23 @@ import type { FactoryEvent } from "../events/envelope.js";
 import type { JobStore } from "../store/job-store.js";
 import { openSqliteJobStore } from "../store/sqlite-job-store.js";
 
-export interface CliIo {
-  home: string;
-  stdout: { write(s: string): void };
-  stderr: { write(s: string): void };
+export interface CliIo extends OnboardingIo {
   /** Stops a command that keeps running, such as `logs --follow`. */
   signal?: AbortSignal;
 }
 
 const USAGE = `Usage: factory <command>
+
+Setup:
+  init [--token] [--org <org>]
+                            Create the Factory home, its own GitHub App (or store a personal
+                            token from stdin with --token), a starter factory.yaml and gitleaks
+  repo add <owner/repo> [--yes] [--skip-baseline] [--backfill]
+                            Add a Target repo: propose its Check Stages and network allowlist,
+                            run the Baseline check, create its labels and write factory.yaml
+  secret set <owner/repo> <NAME>
+                            Read a check secret from stdin into the keychain
+  doctor [--baseline]       Run the self-checks (and with --baseline, each repo's Baseline check)
 
 Commands:
   run                       Run the Factory in the foreground until Ctrl-C
@@ -41,6 +50,14 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
   const [command, ...rest] = argv;
   try {
     switch (command) {
+      case "init":
+        return await initCommand(rest, io);
+      case "repo":
+        return await repoCommand(rest, io);
+      case "secret":
+        return await secretCommand(rest, io);
+      case "doctor":
+        return await doctorCommand(rest, io);
       case "run":
         await factoryRun(io.home, io.signal ?? new AbortController().signal, (s) => io.stderr.write(s));
         return 0;

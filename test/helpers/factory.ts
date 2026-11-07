@@ -1,4 +1,5 @@
 import { expect } from "vitest";
+import type { AgentAdapter } from "../../src/agents/adapter.js";
 import type { FactoryEvent } from "../../src/events/envelope.js";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -47,7 +48,7 @@ export function fakeFactory(agent = new ScriptedAgent(), configText = fixture("e
  * A Factory on an existing home and remote: another Orchestrator over the same Job store,
  * as after a restart. The previous one is simply never called again.
  */
-export function factoryAt(home: string, remote: string, agent = new ScriptedAgent(), opts: FakeFactoryOptions = {}) {
+export function factoryAt<A extends AgentAdapter = ScriptedAgent>(home: string, remote: string, agent: A = new ScriptedAgent() as unknown as A, opts: FakeFactoryOptions = {}) {
   const clones = new Clones(home, { remoteUrl: () => remote });
   const source = new FakeSource();
   const mirror = new FakeMirror();

@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Options, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentRunEvents, AgentRunRequest, GuardDenial, RateLimitInfo } from "../src/agents/adapter.js";
-import { ClaudeAdapter, type QueryFn } from "../src/agents/claude.js";
+import { ClaudeAdapter, FACTORY_PLUGIN_DIR, type QueryFn } from "../src/agents/claude.js";
 import type { Sandbox } from "../src/stages/check-runner.js";
 import { STAGE_RESULT_SCHEMA } from "../src/stages/result.js";
 import { unavailableSandbox } from "./fakes/sandbox.js";
@@ -65,7 +65,7 @@ function setup(opts: { signIn?: "api-key" | "subscription"; secrets?: Record<str
   const request: AgentRunRequest = {
     job_id: "job-1",
     stage_run_id: "run-1",
-    brief: { stage: "build", tools: "write-branch" } as AgentRunRequest["brief"],
+    brief: { stage: "build", instructions: "factory:build", tools: "write-branch" } as AgentRunRequest["brief"],
     renderedBrief: "Build the thing.",
     model: "claude-opus-5-5",
     workingCopy: { dir: join(wc, "repo"), env },
@@ -79,7 +79,7 @@ function setup(opts: { signIn?: "api-key" | "subscription"; secrets?: Record<str
       home,
       signIn: opts.signIn ?? "subscription",
       apiKey: async () => "sk-ant-api-key-from-keychain",
-      pluginDir: "/opt/factory/plugin",
+      pluginDir: FACTORY_PLUGIN_DIR,
       secrets: async () => opts.secrets ?? {},
       sandbox: opts.sandbox ?? readySandbox,
       userHome: "/Users/me",
@@ -100,7 +100,7 @@ describe("Claude adapter: session options", () => {
     expect(o.strictMcpConfig).toBe(true);
     expect(o.managedSettings).toMatchObject({ disableAllHooks: true });
     expect(o.cwd).toBe(s.request.workingCopy.dir);
-    expect(o.plugins).toEqual([{ type: "local", path: "/opt/factory/plugin" }]);
+    expect(o.plugins).toEqual([{ type: "local", path: FACTORY_PLUGIN_DIR }]);
     expect(o.model).toBe("claude-opus-5-5");
     expect(o.maxTurns).toBe(100);
     expect(o.maxBudgetUsd).toBe(5);

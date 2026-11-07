@@ -712,6 +712,7 @@ export class Orchestrator {
       repo: job.repo,
       issue: { number: job.issue, title: ctx.approval.title, body: ctx.approval.body },
       branch: wc.branch,
+      base: wc.base,
       workingCopy: wc.path,
       attempt: job.attempt,
       bounce: progress.bounces,
@@ -1174,7 +1175,7 @@ export class Orchestrator {
 const SOURCE_CREDENTIALS = "source-credentials";
 
 /** The Job store cursor the Source poll carries on from. */
-const SOURCE_CURSOR = "source";
+export const SOURCE_CURSOR = "source";
 
 /** When a plan limit gives no reset time, look again after an hour. */
 const PLAN_LIMIT_FALLBACK_MS = 60 * 60_000;

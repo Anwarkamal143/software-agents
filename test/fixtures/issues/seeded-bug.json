@@ -1,0 +1,5 @@
+{
+  "number": 44,
+  "title": "Add discount(total, percent) to src/cart.js",
+  "body": "Add an exported `discount(total, percent)` function to `src/cart.js` that returns the price after taking `percent`% off `total`. For example `discount(200, 25)` is 150. `percent` is between 0 and 100. Add a test in `test/cart.test.js`."
+}
