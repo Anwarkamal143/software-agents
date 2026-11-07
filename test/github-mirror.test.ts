@@ -6,7 +6,9 @@ import { TokenAuth } from "../src/github/auth.js";
 import { GitHubClient } from "../src/github/client.js";
 import { FACTORY_MARKER } from "../src/humans/commands.js";
 import type { JobState } from "../src/jobs/projection.js";
-import { GitHubMirror } from "../src/mirror/github.js";
+import { EventLog } from "../src/jobs/event-log.js";
+import { GitHubMirror, recordDropped } from "../src/mirror/github.js";
+import { openSqliteJobStore } from "../src/store/sqlite-job-store.js";
 import type { MirrorUpdate } from "../src/mirror/mirror.js";
 import { FakeGitHub } from "./fakes/github.js";
 import { tmpHome } from "./helpers/tmp.js";
@@ -49,11 +51,12 @@ function update(type: string, job: Partial<JobState> = {}, data: Record<string, 
 
 function setup(dir = join(tmpHome(), "outbox", "github"), github = new FakeGitHub().issue(REPO, ISSUE).issue(REPO, 12, { pr: { branch: "factory/7" } })) {
   const scheduled: number[] = [];
+  const dropped: [string, string][] = [];
   const client = new GitHubClient({ auth: new TokenAuth("ghp_test"), fetch: github.fetch, sleep: async () => {} });
-  const mirror = new GitHubMirror({ client, dir, schedule: (_run, ms) => void scheduled.push(ms) });
+  const mirror = new GitHubMirror({ client, dir, schedule: (_run, ms) => void scheduled.push(ms), onDropped: (u, why) => void dropped.push([u.event.type, why]) });
   const comments = (n = ISSUE) => (github.comments.get(`${REPO}#${n}`) ?? []).map((c) => c.body);
   const statusComments = () => comments().filter((b) => b.includes("factory:status"));
-  return { github, client, mirror, dir, scheduled, comments, statusComments };
+  return { github, client, mirror, dir, scheduled, dropped, comments, statusComments };
 }
 
 describe("GitHub Mirror", () => {
@@ -273,6 +276,8 @@ describe("GitHub Mirror", () => {
 
     expect(s.mirror.pending()).toBe(0);
     expect(s.statusComments()).toHaveLength(1);
+    // Dropping a write is told, so it can be recorded rather than lost without a trace.
+    expect(s.dropped).toEqual([["job-approved", "GitHub refused it 3 times, last with 404"]]);
   });
 
   test("a forbidden write (such as a missing permission) is retried later, not dropped", async () => {
@@ -316,5 +321,80 @@ describe("GitHub Mirror", () => {
     expect(again.mirror.pending()).toBe(0);
     expect(s.statusComments()).toHaveLength(1);
     expect(s.statusComments()[0]).toContain("- **Status:** running");
+  });
+
+  test("someone else's comment carrying a status marker is never taken over, even when the Mirror lost its record", async () => {
+    const s = setup();
+    s.github.comment(REPO, ISSUE, "mallory", "<!-- factory:status job=01JOB --> I am the status now");
+
+    await s.mirror.write(update("job-approved"));
+    await s.mirror.drain();
+    rmSync(join(s.dir, "state.json"));
+    const again = setup(s.dir, s.github);
+    await again.mirror.write(update("stage-started", { status: "running", stage: "build" }));
+    await again.mirror.drain();
+
+    const status = s.statusComments();
+    expect(status).toHaveLength(2);
+    expect(status[0]).toBe("<!-- factory:status job=01JOB --> I am the status now");
+    expect(status[1]).toContain("- **Status:** running");
+  });
+
+  test("someone else's comment carrying a post's marker doesn't stop the Factory posting it", async () => {
+    const s = setup();
+    const requested = update("human-requested", { status: "waiting", stage: "triage", reason: "question" }, { kind: "question", text: "Which?", options: ["A", "B"], stage: "triage" });
+    s.github.comment(REPO, ISSUE, "mallory", `<!-- factory:post=${requested.event.id}/request -->`);
+
+    await s.mirror.write(requested);
+    await s.mirror.drain();
+
+    expect(s.comments().filter((b) => b.includes("Which?"))).toHaveLength(1);
+  });
+
+  test("with a personal token, the Factory's own comments are recognised by the token's login", async () => {
+    const s = setup();
+    s.github.actingAs = { login: "anwar", app: false };
+    await s.mirror.write(update("job-approved"));
+    await s.mirror.drain();
+    rmSync(join(s.dir, "state.json"));
+
+    const again = setup(s.dir, s.github);
+    await again.mirror.write(update("stage-started", { status: "running", stage: "build" }));
+    await again.mirror.drain();
+
+    expect(s.statusComments()).toHaveLength(1);
+    expect(s.statusComments()[0]).toContain("- **Status:** running");
+  });
+
+  test("a status label someone took off comes back with the next change, and a stray one is taken off", async () => {
+    const s = setup();
+    await s.mirror.write(update("stage-started", { status: "running", stage: "build" }));
+    await s.mirror.drain();
+    s.github.happen(REPO, ISSUE, "unlabeled", "2026-11-01T10:05:00Z", "alice", { label: { name: "factory:running" } });
+    s.github.label(REPO, ISSUE, "2026-11-01T10:06:00Z", "alice", "factory:failed");
+
+    await s.mirror.write(update("stage-started", { status: "running", stage: "verify" }));
+    await s.mirror.drain();
+    expect(s.github.labelNames(REPO, ISSUE)).toEqual(["factory:failed", "factory:running"]);
+
+    await s.mirror.write(update("stage-passed", { status: "queued", stage: "verify" }));
+    await s.mirror.drain();
+    expect(s.github.labelNames(REPO, ISSUE)).toEqual(["factory:queued"]);
+  });
+
+  test("a dropped write is recorded in the Event log, against the event it was mirroring", () => {
+    const log = new EventLog(openSqliteJobStore(join(tmpHome(), "factory.db")));
+    const approvedEvent = log.record({ type: "job-approved", job_id: "01JOB", actor: "orchestrator", data: { repo: REPO, issue: ISSUE } });
+
+    recordDropped(log)({ event: approvedEvent, job: log.job("01JOB")! }, "GitHub refused it 3 times, last with 404");
+
+    expect(log.store.read().at(-1)).toMatchObject({
+      type: "mirror-write-dropped",
+      job_id: "01JOB",
+      actor: "orchestrator",
+      caused_by: approvedEvent.id,
+      data: { mirror: "github", event_type: "job-approved", why: "GitHub refused it 3 times, last with 404" },
+    });
+    expect(log.job("01JOB")!.status).toBe("queued");
   });
 });

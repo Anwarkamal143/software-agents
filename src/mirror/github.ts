@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { GitHubError, type GitHubClient } from "../github/client.js";
 import { renderAlreadyAnswered, renderHumanRequest, renderNotWaiting, renderReminder } from "../humans/request.js";
+import type { EventLog } from "../jobs/event-log.js";
 import type { JobState } from "../jobs/projection.js";
 import type { Mirror, MirrorUpdate } from "./mirror.js";
 import { Outbox, readJson, writeAtomic, type OutboxEntry } from "./outbox.js";
@@ -14,6 +15,16 @@ export interface GitHubMirrorOptions {
   schedule?: (run: () => void, ms: number) => void;
   /** Milliseconds since the epoch; backoff is timed from it. */
   now?: () => number;
+  /** Told about each write dropped after GitHub kept refusing it, so it can be recorded. */
+  onDropped?: (update: MirrorUpdate, why: string) => void;
+}
+
+/** A comment as GitHub lists it: enough to tell whether the Factory wrote it. */
+interface Comment {
+  id: number;
+  body?: string;
+  user?: { login: string } | null;
+  performed_via_github_app?: unknown;
 }
 
 /** After a failed delivery, wait this long before the next, doubling up to the cap. */
@@ -45,6 +56,8 @@ interface Written {
 
 interface MirrorState {
   v: 1;
+  /** The login the Factory's comments appear under: its App's bot, or a personal token's owner. */
+  self?: string;
   jobs: Record<string, Written>;
 }
 
@@ -64,6 +77,8 @@ export class GitHubMirror implements Mirror {
   private wake: { at: number; token: number } | null = null;
   private tokens = 0;
   private draining: Promise<void> | null = null;
+  /** Asked GitHub who the Factory is, this process. */
+  private askedWho = false;
 
   constructor(private readonly options: GitHubMirrorOptions) {
     this.outbox = new Outbox(join(options.dir, "queue"));
@@ -107,6 +122,7 @@ export class GitHubMirror implements Mirror {
             this.outbox.save(head.name, head.entry);
             throw err;
           }
+          this.dropped(head.entry.item, `GitHub refused it ${MAX_REFUSALS} times, last with ${err.status}`);
         }
         this.outbox.remove(head.name);
         this.backoffMs = 0;
@@ -142,14 +158,56 @@ export class GitHubMirror implements Mirror {
       if (entry.done.includes(post.part)) continue;
       // Posted already, by a process that died before it could note so: find it rather than post another.
       const marker = `<!-- factory:post=${event.id}/${post.part} -->`;
-      const comments = `/repos/${job.repo}/issues/${post.number}/comments`;
-      const existing = await this.options.client.all<{ body?: string }>(`${comments}?per_page=100`, { repo: job.repo });
-      if (!existing.some((c) => c.body?.includes(marker))) await this.send("POST", comments, job.repo, { body: withMarker(post.body, marker) });
+      if (!(await this.findOwn(job.repo, post.number, marker))) await this.post(job.repo, post.number, withMarker(post.body, marker));
       entry.done.push(post.part);
       this.outbox.save(name, entry);
     }
-    await this.ensureLabel(job);
-    await this.ensureStatusComment(job);
+    const status = renderStatusComment(job, this.written(job.job_id).pr ?? null);
+    const changed = this.written(job.job_id).body !== status;
+    await this.ensureLabel(job, changed);
+    await this.ensureStatusComment(job, status);
+  }
+
+  /** Posts a comment, and learns from GitHub's answer who the Factory comments as. */
+  private async post(repo: string, number: number, body: string): Promise<number> {
+    const posted = await this.send<Comment>("POST", `/repos/${repo}/issues/${number}/comments`, repo, { body });
+    const login = posted.body?.user?.login;
+    if (login && this.state.self !== login) {
+      this.state.self = login;
+      this.saveState();
+    }
+    return posted.body!.id;
+  }
+
+  /**
+   * The Factory's own comment carrying `marker`, if there is one. Anyone can paste a marker into a
+   * comment, so only one the Factory wrote counts: never take over, or stay quiet because of, someone else's.
+   */
+  private async findOwn(repo: string, number: number, marker: string): Promise<Comment | undefined> {
+    const comments = await this.options.client.all<Comment>(`/repos/${repo}/issues/${number}/comments?per_page=100`, { repo });
+    for (const c of comments.filter((c) => c.body?.includes(marker))) if (await this.isOwn(c, repo)) return c;
+    return undefined;
+  }
+
+  private async isOwn(comment: Comment, repo: string): Promise<boolean> {
+    if (!this.state.self && !this.askedWho) {
+      this.askedWho = true;
+      // A personal token can say whose it is; an App's installation token can't, and is told by its comments instead.
+      const me = await this.options.client.request<{ login: string }>("GET", "/user", { repo }).catch(() => null);
+      if (me?.status === 200 && me.body?.login) this.state.self = me.body.login;
+    }
+    if (this.state.self) return comment.user?.login === this.state.self;
+    if (!comment.performed_via_github_app || !comment.user?.login) return false;
+    this.state.self = comment.user.login;
+    return true;
+  }
+
+  private dropped(update: MirrorUpdate, why: string): void {
+    try {
+      this.options.onDropped?.(update, why);
+    } catch {
+      // Being told is a courtesy; the queue moves on regardless.
+    }
   }
 
   /** One request; a 404 is a refusal like any other (GitHubClient hands it back rather than throwing). */
@@ -159,13 +217,17 @@ export class GitHubMirror implements Mirror {
     return response;
   }
 
-  private async ensureLabel(job: JobState): Promise<void> {
+  /**
+   * The issue's one status label. Put on again whenever the status comment changes, in case someone
+   * took it off; when the status moves, every other status label goes, whoever put it there.
+   */
+  private async ensureLabel(job: JobState, changed: boolean): Promise<void> {
     const mine = this.written(job.job_id);
     const want = statusLabel(job.status);
-    if (mine.label === want) return;
+    if (mine.label === want && !changed) return;
     const path = `/repos/${job.repo}/issues/${job.issue}/labels`;
     await this.send("POST", path, job.repo, { labels: [want] });
-    const stale = mine.label ? [mine.label] : (await this.options.client.all<{ name: string }>(path, { repo: job.repo })).map((l) => l.name).filter((n) => STATUS_LABELS.has(n));
+    const stale = mine.label === want ? [] : (await this.options.client.all<{ name: string }>(path, { repo: job.repo })).map((l) => l.name).filter((n) => STATUS_LABELS.has(n));
     for (const name of stale.filter((n) => n !== want)) {
       await this.options.client.request("DELETE", `${path}/${encodeURIComponent(name)}`, { repo: job.repo });
     }
@@ -173,22 +235,16 @@ export class GitHubMirror implements Mirror {
     this.saveState();
   }
 
-  private async ensureStatusComment(job: JobState): Promise<void> {
+  private async ensureStatusComment(job: JobState, body: string): Promise<void> {
     const mine = this.written(job.job_id);
-    const body = renderStatusComment(job, mine.pr ?? null);
     if (mine.comment && mine.body === body) return;
-    const { client } = this.options;
-    const comments = `/repos/${job.repo}/issues/${job.issue}/comments`;
     // Lost track of it (a crash between posting and saving): find it by its marker rather than post another.
-    mine.comment ??= (await client.all<{ id: number; body?: string }>(`${comments}?per_page=100`, { repo: job.repo })).find((c) => c.body?.includes(statusMarker(job.job_id)))?.id;
+    mine.comment ??= (await this.findOwn(job.repo, job.issue, statusMarker(job.job_id)))?.id;
     if (mine.comment) {
-      const edited = await client.request("PATCH", `/repos/${job.repo}/issues/comments/${mine.comment}`, { repo: job.repo, body: { body } });
+      const edited = await this.options.client.request("PATCH", `/repos/${job.repo}/issues/comments/${mine.comment}`, { repo: job.repo, body: { body } });
       if (edited.status === 404) delete mine.comment;
     }
-    if (!mine.comment) {
-      const posted = await this.send<{ id: number }>("POST", comments, job.repo, { body });
-      mine.comment = posted.body!.id;
-    }
+    mine.comment ??= await this.post(job.repo, job.issue, body);
     mine.body = body;
     this.saveState();
   }
@@ -229,4 +285,11 @@ function posts({ event, job }: MirrorUpdate): Post[] {
 /** A post with its own marker: on a line of its own, or at the end of a one-line post so it stays one line. */
 function withMarker(body: string, marker: string): string {
   return body.endsWith("\n") ? `${body}${marker}\n` : `${body} ${marker}`;
+}
+
+/** Records each write the GitHub Mirror drops in the Event log, so what GitHub is missing can be seen. */
+export function recordDropped(log: EventLog): NonNullable<GitHubMirrorOptions["onDropped"]> {
+  return ({ event }, why) => {
+    log.record({ type: "mirror-write-dropped", job_id: event.job_id, attempt: event.attempt, actor: "orchestrator", caused_by: event.id, data: { mirror: "github", event_type: event.type, why } });
+  };
 }

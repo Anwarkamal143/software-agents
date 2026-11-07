@@ -9,6 +9,12 @@ export function recorded<T = Record<string, unknown>>(name: string, over: Record
 }
 
 type Entry = Record<string, unknown>;
+interface FakeComment {
+  id: number;
+  body: string;
+  user: { login: string; type: string };
+  performed_via_github_app: { slug: string } | null;
+}
 interface FakeIssue {
   issue: Entry;
   timeline: Entry[];
@@ -35,8 +41,10 @@ export class FakeGitHub {
   down = false;
   /** Every write is refused with a 403, as when the App lacks a permission. */
   forbidden = false;
+  /** Who the Factory's requests act as: its GitHub App's bot, or the owner of a personal token. */
+  actingAs: { login: string; app: boolean } = { login: "factory-app[bot]", app: true };
   /** Comments on issues and PRs, keyed `repo#number`, oldest first. */
-  readonly comments = new Map<string, { id: number; body: string }[]>();
+  readonly comments = new Map<string, FakeComment[]>();
   private readonly issues = new Map<string, FakeIssue>();
   private readonly pulls = new Map<string, string>();
 
@@ -107,11 +115,13 @@ export class FakeGitHub {
     let m: RegExpMatchArray | null;
     const sent = init.body ? (JSON.parse(init.body) as Entry) : {};
     if (this.forbidden && init.method !== "GET") return json({ message: "Resource not accessible by integration" }, {}, 403);
+    // An installation token can't ask who it is; a personal token can.
+    if (u.pathname === "/user") return this.actingAs.app ? json({ message: "Resource not accessible by integration" }, {}, 403) : json({ login: this.actingAs.login, type: "User" });
     if ((m = u.pathname.match(/^\/repos\/([^/]+\/[^/]+)\/issues\/(\d+)\/comments$/))) {
       const key = `${m[1]}#${m[2]}`;
       const list = this.comments.get(key) ?? [];
       if (init.method === "GET") return json(list);
-      const comment = { id: ids++, body: String(sent.body) };
+      const comment = this.newComment(this.actingAs.login, String(sent.body), this.actingAs.app);
       this.comments.set(key, [...list, comment]);
       return json(comment, {}, 201);
     }
@@ -158,6 +168,16 @@ export class FakeGitHub {
     if (u.pathname === "/graphql") return json(recorded("graphql-editor", { data: { repository: { issueOrPullRequest: { editor: this.editor ? { login: this.editor } : null } } } }));
     return json({ message: "Not Found" }, {}, 404);
   };
+
+  /** A comment someone posts on an issue or PR, outside the Factory. */
+  comment(repo: string, number: number, by: string, body: string): void {
+    const key = `${repo}#${number}`;
+    this.comments.set(key, [...(this.comments.get(key) ?? []), this.newComment(by, body, false)]);
+  }
+
+  private newComment(login: string, body: string, app: boolean): FakeComment {
+    return { id: ids++, body, user: { login, type: app ? "Bot" : "User" }, performed_via_github_app: app ? { slug: "factory-app" } : null };
+  }
 
   labelNames(repo: string, number: number): string[] {
     return (this.get(repo, number).issue.labels as { name: string }[]).map((l) => l.name);

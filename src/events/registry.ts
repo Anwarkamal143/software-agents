@@ -122,6 +122,9 @@ export const V1_EVENTS: EventRegistry = {
   "reply-ignored": { version: 2, data: obj({ why: str }, { command: str, request: str, detail: str, ...reply }), upgrades: { 1: sameData } },
   // One reminder per Human request, after three days of waiting.
   "human-reminded": { version: 2, data: obj({}, { request: str }), upgrades: { 1: sameData } },
+  // A Mirror gave up on a write GitHub kept refusing (ADR 0002): `event_type` is what it was mirroring (`caused_by`).
+  // Job state never depends on it; it says what GitHub may be missing.
+  "mirror-write-dropped": { version: 1, data: obj({ mirror: str, event_type: str, why: str }) },
   // Merging
   "pr-opened": { version: 1, data: obj({ number: { type: "integer", minimum: 1 } }, { url: str }) },
   rebased: { version: 1, data: obj({ base: str }) },
