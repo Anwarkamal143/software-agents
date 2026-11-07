@@ -43,11 +43,13 @@ describe("factory secret set", () => {
     expect(loadConfig(readFileSync(join(s.home, "factory.yaml"), "utf8"))).toMatchObject({ ok: true, config: { repos: [{ check_secrets: ["DATABASE_URL"] }] } });
   });
 
-  test("refuses an empty value, a bad name, or a repo that isn't added", async () => {
+  test("refuses an empty value, a bad name, one of the Factory's own credentials, or a repo that isn't added", async () => {
     const s = setup();
     await expect(secretSet("acme/web-app", "DATABASE_URL", async () => "\n", s.deps)).rejects.toThrow(/empty/);
     await expect(secretSet("acme/web-app", "database-url", async () => "x", s.deps)).rejects.toThrow(/name/);
     await expect(secretSet("acme/other", "TOKEN", async () => "x", s.deps)).rejects.toThrow(/factory repo add acme\/other/);
+    await expect(secretSet("acme/web-app", "GITHUB_TOKEN", async () => "x", s.deps)).rejects.toThrow(/the Factory's own credential/);
+    await expect(secretSet("acme/web-app", "GITHUB_APP_PRIVATE_KEY", async () => "x", s.deps)).rejects.toThrow(/the Factory's own credential/);
     expect(s.secrets.read).toEqual([]);
   });
 });

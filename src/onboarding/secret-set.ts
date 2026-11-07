@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { loadConfig } from "../config/load.js";
 import { homePaths } from "../home.js";
+import { GITHUB_SECRETS } from "../github/auth.js";
 import type { WritableSecretStore } from "../secrets/keychain.js";
 import { addCheckSecret } from "./config-edit.js";
 
@@ -17,6 +18,10 @@ export interface SecretSetDeps {
  */
 export async function secretSet(repo: string, name: string, readValue: () => Promise<string>, deps: SecretSetDeps): Promise<void> {
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new Error(`"${name}" isn't a check secret name: it becomes an env var, so use letters, digits and _, such as DATABASE_URL.`);
+  // Check secrets share the keychain with the Factory's own credentials: never let one replace them.
+  if ((Object.values(GITHUB_SECRETS) as string[]).includes(name) || name === "ANTHROPIC_API_KEY") {
+    throw new Error(`${name} is the Factory's own credential, not a check secret: pick another name (\`factory init\` sets the Factory's credentials).`);
+  }
   const path = homePaths(deps.home).config;
   if (!existsSync(path)) throw new Error(`No config at ${path}: run \`factory init\` first.`);
   const text = readFileSync(path, "utf8");

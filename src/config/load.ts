@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { Ajv, type ErrorObject } from "ajv";
 import { parseDocument } from "yaml";
-import { pluginSkills } from "../agents/plugin.js";
+import { pluginSkills, skillName } from "../agents/plugin.js";
 import { BUILT_IN_RISK_RULES, FACTORY_WIDE_POLICY_KEYS, flatten } from "./policies.js";
 import type { FactoryConfig } from "./types.js";
 
@@ -58,7 +58,7 @@ function factoryWideKeys(at: string, patch: object | undefined): string[] {
 
 /** Null if `ref` names a skill the Factory plugin has, else why not. */
 function unknownInstructions(ref: string, skills: string[]): string | null {
-  const name = /^factory:([a-z0-9][a-z0-9-]*)$/.exec(ref)?.[1];
+  const name = skillName(ref);
   return name && skills.includes(name) ? null : `the Factory plugin has no instructions ${ref}.`;
 }
 

@@ -18,12 +18,17 @@ export function pluginSkills(pluginDir = FACTORY_PLUGIN_DIR): string[] {
     .sort();
 }
 
+/** The skill name in a `factory:<name>` reference, or null if it isn't one. */
+export function skillName(ref: string): string | null {
+  return /^factory:([a-z0-9][a-z0-9-]*)$/.exec(ref)?.[1] ?? null;
+}
+
 /**
  * The instructions a `factory:<name>` reference names: the skill's text without its frontmatter.
  * Throws for anything else, so a Stage never runs on instructions the plugin doesn't have.
  */
 export function stageInstructions(ref: string, pluginDir = FACTORY_PLUGIN_DIR): string {
-  const name = /^factory:([a-z0-9][a-z0-9-]*)$/.exec(ref)?.[1];
+  const name = skillName(ref);
   if (!name) throw new Error(`Stage instructions "${ref}" must name a Factory plugin skill, as factory:<name>.`);
   const file = join(pluginDir, "skills", name, "SKILL.md");
   if (!existsSync(file)) throw new Error(`The Factory plugin has no instructions for ${ref} (no ${file}).`);
