@@ -6,6 +6,7 @@ import { runCli } from "../src/cli/run.js";
 import { approved, comment } from "./fakes/source.js";
 import { asks, building, fail, finding, pass, ScriptedAgent } from "./fakes/agent.js";
 import { fakeFactory, expectAtMergeGate } from "./helpers/factory.js";
+import { agentGit } from "./helpers/git.js";
 import { fixture } from "./helpers/config.js";
 
 async function cli(home: string, ...argv: string[]) {
@@ -139,6 +140,29 @@ describe("Orchestrator: Human requests and Reply commands", () => {
     expectAtMergeGate(f.log.store.read());
   });
 
+  test("/cancel once the Factory has given up fails the Job: its draft PR, branches and Working copy are kept to look at", async () => {
+    const f = fakeFactory(
+      new ScriptedAgent({
+        build: Array.from({ length: 4 }, () => building),
+        review: [1, 2, 3, 4].map((n) => fail(`Round ${n}.`, [finding(`problem-${n}`)])),
+      }),
+    );
+    f.source.push(approved(7));
+    await f.orchestrator.runUntilIdle();
+    const { job_id } = f.onlyJob();
+    expect(f.onlyJob()).toMatchObject({ status: "waiting", reason: "bounce-cap" });
+
+    f.source.push(comment(7, "/cancel"));
+    await f.orchestrator.runUntilIdle();
+
+    expect(f.onlyJob()).toMatchObject({ status: "failed", reason: "review failed after 3 Bounces (cap 3). Round 4." });
+    expect(f.log.store.read().at(-1)).toMatchObject({ type: "job-failed", actor: "human:alice", data: { reason: "review failed after 3 Bounces (cap 3). Round 4." } });
+    expect(existsSync(join(f.home, "work", job_id))).toBe(true);
+    expect(agentGit(f.remote, "rev-parse", "--verify", "-q", "refs/heads/factory/7")).toMatch(/^[0-9a-f]{40}$/);
+    // Only a human starts the next Attempt.
+    expect(await cli(f.home, "retry", job_id)).toMatchObject({ code: 0 });
+  });
+
   test("/cancel from the CLI cancels the Job and removes its Working copies", async () => {
     const f = fakeFactory(new ScriptedAgent({ triage: [asks("Sure?", ["Yes", "No"])] }));
     f.source.push(approved(7));
@@ -197,7 +221,8 @@ describe("Orchestrator: Human requests and Reply commands", () => {
     const ignored = f.log.store.read().find((e) => e.type === "reply-ignored")!;
     expect(ignored).toMatchObject({ actor: "human:bob", data: { why: "already-answered", channel: "github" } });
     expect(f.mirror.writes.some((w) => w.event.id === ignored.id)).toBe(true);
-    expect(f.onlyJob()).toMatchObject({ status: "cancelled" });
+    // The request was the Factory giving up (review's retries ran out), so the /cancel fails the Job.
+    expect(f.onlyJob()).toMatchObject({ status: "failed" });
 
     // The other way round: a CLI reply after the GitHub one is told so.
     const g = fakeFactory(new ScriptedAgent({ build: [building], review: [invalid, invalid] }));

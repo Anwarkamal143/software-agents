@@ -29,7 +29,7 @@ import { SandboxUnavailable, type CheckRun, type CheckRunner } from "../stages/c
 import { parseStageResult, STAGE_RESULT_SCHEMA, type StageResult } from "../stages/result.js";
 import type { ArtifactStore } from "../store/artifact-store.js";
 import { attemptProgress, type AttemptProgress, type PendingAnswer } from "./progress.js";
-import { isLive, STAGE_RUN_ENDINGS } from "../jobs/endings.js";
+import { GIVE_UP_CAUSES, isLive, STAGE_RUN_ENDINGS } from "../jobs/endings.js";
 import { afterRunError, retryRun } from "./retries.js";
 import { MAX_GUARD_DENIALS, SessionWatch, type DenialTally, type RunEnvelope } from "./session-watch.js";
 
@@ -590,6 +590,10 @@ export class Orchestrator {
     const { job, progress, resolution } = ctx;
     const envelope = { job_id: job.job_id, attempt: job.attempt, actor: answered.actor, caused_by: answered.id };
     const command = answered.data.command;
+    // The Factory had given up: the Job fails, and its draft PR, branches and Working copy stay for 7 days (ADR 0010).
+    if (command === "cancel" && GIVE_UP_CAUSES.has(String(request?.data.cause))) {
+      return instant(() => this.record({ ...envelope, type: "job-failed", data: { reason: String(request!.data.text ?? request!.data.cause) } }));
+    }
     if (command === "cancel") {
       return instant(async () => {
         await this.record({ ...envelope, type: "job-cancelled", data: { reason: `cancelled by ${answered.actor}` } });
