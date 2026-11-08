@@ -4,7 +4,6 @@ import { join } from "node:path";
 import type { Options, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentRunEvents, AgentRunRequest, GuardDenial, RateLimitInfo } from "../src/agents/adapter.js";
 import { ClaudeAdapter, FACTORY_PLUGIN_DIR, type QueryFn } from "../src/agents/claude.js";
-import { STAGE_SKILLS_DIR } from "../src/agents/stage-skills.js";
 import type { Sandbox } from "../src/stages/check-runner.js";
 import { STAGE_RESULT_SCHEMA } from "../src/stages/result.js";
 import { unavailableSandbox } from "./fakes/sandbox.js";
@@ -101,7 +100,7 @@ describe("Claude adapter: session options", () => {
     expect(o.strictMcpConfig).toBe(true);
     expect(o.managedSettings).toMatchObject({ disableAllHooks: true });
     expect(o.cwd).toBe(s.request.workingCopy.dir);
-    expect(o.plugins).toEqual([{ type: "local", path: FACTORY_PLUGIN_DIR }, { type: "local", path: STAGE_SKILLS_DIR }]);
+    expect(o.plugins).toEqual([{ type: "local", path: FACTORY_PLUGIN_DIR }]);
     expect(o.model).toBe("claude-opus-5-5");
     expect(o.maxTurns).toBe(100);
     expect(o.maxBudgetUsd).toBe(5);

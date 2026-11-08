@@ -6,7 +6,7 @@ import { SandboxUnavailable, srtSandbox, type Sandbox } from "../stages/check-ru
 import type { AgentAdapter, AgentRunOutcome, AgentRunRequest, MeasuredFacts } from "./adapter.js";
 import { checkToolCall } from "./guards.js";
 import { stageInstructions } from "./plugin.js";
-import { mainSkillText, STAGE_SKILLS_DIR, STAGE_SKILLS_PLUGIN } from "./stage-skills.js";
+import { STAGE_SKILLS_DIR, stageSkillText } from "./stage-skills.js";
 import { Transcripts } from "./transcript.js";
 
 export { FACTORY_PLUGIN_DIR } from "./plugin.js";
@@ -223,21 +223,21 @@ export function sessionOptions(request: AgentRunRequest, ctx: { home: string; us
     strictMcpConfig: true,
     mcpServers: {},
     managedSettings: { disableAllHooks: true },
-    plugins: [
-      { type: "local", path: ctx.pluginDir },
-      { type: "local", path: skillsDir },
-    ],
-    // The Stage contract, then its main Stage skill, always in force (ADR 0012). The Skill listing
-    // holds only the Stage's supporting skills, so it can't wander into another Stage's contract.
+    plugins: [{ type: "local", path: ctx.pluginDir }],
+    // The Stage contract, then its main and supporting Stage skills, always in force (ADR 0012).
+    // No Skill listing, so it can't wander into another Stage's contract or skip one of its own.
     systemPrompt: {
       type: "preset",
       preset: "claude_code",
-      append: [stageInstructions(request.brief.instructions, ctx.pluginDir), ...(skill ? [mainSkillText(skill, skillsDir)] : [])].join("\n\n"),
+      append: [
+        stageInstructions(request.brief.instructions, ctx.pluginDir),
+        ...(skill ? [stageSkillText(skill, "main", skillsDir)] : []),
+        ...supporting.map((name) => stageSkillText(name, "supporting", skillsDir)),
+      ].join("\n\n"),
     },
-    skills: supporting.map((name) => `${STAGE_SKILLS_PLUGIN}:${name}`),
+    skills: [],
     permissionMode: "default",
-    // Skill only when there are supporting skills to call; the listing above is all it can reach.
-    allowedTools: supporting.length ? [...TOOLS[profile], "Skill"] : TOOLS[profile],
+    allowedTools: TOOLS[profile],
     disallowedTools: DISALLOWED,
     hooks: { PreToolUse: [{ hooks: [guard] }] },
     canUseTool,

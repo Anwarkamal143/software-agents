@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { AgentRunRequest } from "../src/agents/adapter.js";
 import { sessionOptions } from "../src/agents/claude.js";
 import { DEFAULT_STAGE_SKILLS, FACTORY_PLUGIN_DIR, pluginSkills, stageInstructions } from "../src/agents/plugin.js";
-import { mainSkillText, skillHash, STAGE_SKILLS_DIR, stageSkillDir, stageSkillNames, stageSkillsLock } from "../src/agents/stage-skills.js";
+import { skillHash, stageSkillText, STAGE_SKILLS_DIR, stageSkillDir, stageSkillNames, stageSkillsLock } from "../src/agents/stage-skills.js";
 import { STAGE_RESULT_SCHEMA } from "../src/stages/result.js";
 
 const request = (instructions: string, tools: "read-only" | "write-branch" = "read-only", skills: { skill?: string; supporting?: string[] } = {}): AgentRunRequest => ({
@@ -57,33 +57,32 @@ describe("the Factory plugin", () => {
     const options = sessionOptions(request("factory:review"), ctx);
     expect(options.systemPrompt).toEqual({ type: "preset", preset: "claude_code", append: stageInstructions("factory:review") });
     expect(options.skills).toEqual([]);
-    expect(options.plugins).toEqual([{ type: "local", path: FACTORY_PLUGIN_DIR }, { type: "local", path: STAGE_SKILLS_DIR }]);
+    expect(options.plugins).toEqual([{ type: "local", path: FACTORY_PLUGIN_DIR }]);
     expect(options.managedSettings).toEqual({ disableAllHooks: true });
   });
 
-  test("the main Stage skill follows the Stage contract, and only supporting skills are listed (ADR 0012)", () => {
+  test("the Stage contract comes first, then the main Stage skill, then the supporting ones, with no Skill listing (ADR 0012)", () => {
     const options = sessionOptions(request("factory:review", "read-only", { skill: "super-review", supporting: ["ponytail-review", "blast-radius"] }), ctx);
     const append = (options.systemPrompt as { append: string }).append;
+    const at = (s: string) => append.indexOf(s);
     expect(append.startsWith(stageInstructions("factory:review"))).toBe(true);
-    expect(append.indexOf("# Stage skill: super-review")).toBeGreaterThan(stageInstructions("factory:review").length);
-    expect(append).toMatch(/the Stage contract wins/);
+    expect(at("# Stage skill: super-review")).toBeGreaterThan(stageInstructions("factory:review").length);
+    expect(at("# Supporting Stage skill: ponytail-review")).toBeGreaterThan(at("# Stage skill: super-review"));
+    expect(at("# Supporting Stage skill: blast-radius")).toBeGreaterThan(at("# Supporting Stage skill: ponytail-review"));
+    expect(append.match(/the Stage contract wins/g)).toHaveLength(3);
     expect(append).not.toMatch(/^name: super-review$/m);
-    expect(options.skills).toEqual(["stage-skills:ponytail-review", "stage-skills:blast-radius"]);
-    expect(options.allowedTools).toContain("Skill");
-    expect(sessionOptions(request("factory:review", "read-only", { skill: "super-review" }), ctx).allowedTools).not.toContain("Skill");
+    expect(options.skills).toEqual([]);
+    expect(options.allowedTools).not.toContain("Skill");
   });
 
-  test("a main Stage skill that isn't pinned is refused", () => {
-    expect(() => mainSkillText("unpinned-skill")).toThrow(/isn't a pinned Stage skill/);
+  test("a Stage skill that isn't pinned is refused", () => {
+    expect(() => stageSkillText("unpinned-skill", "main")).toThrow(/isn't a pinned Stage skill/);
   });
 });
 
 describe("the Stage skills (ADR 0012)", () => {
-  test("are instructions only: no hooks, MCP servers, agents or scripts", () => {
-    const manifest = JSON.parse(readFileSync(join(STAGE_SKILLS_DIR, ".claude-plugin", "plugin.json"), "utf8")) as Record<string, unknown>;
-    expect(manifest.name).toBe("stage-skills");
-    for (const key of ["hooks", "mcpServers", "agents", "commands", "lspServers"]) expect(manifest).not.toHaveProperty(key);
-    expect(readdirSync(STAGE_SKILLS_DIR).sort()).toEqual([".claude-plugin", "NOTICE", "skills", "skills-lock.json"]);
+  test("are instructions only: no plugin, hooks, MCP servers, agents or scripts", () => {
+    expect(readdirSync(STAGE_SKILLS_DIR).sort()).toEqual(["NOTICE", "skills", "skills-lock.json"]);
     const files = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? files(join(dir, e.name)) : [e.name]));
     for (const name of stageSkillNames()) {
       for (const file of files(stageSkillDir(name))) expect(file, `${name}/${file}`).toMatch(/\.md$|^LICENSE$/);

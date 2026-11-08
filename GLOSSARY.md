@@ -125,7 +125,7 @@ The part of an Agent Stage's instructions the Factory writes itself: what the ag
 _Avoid_: wrapper, preamble, system prompt
 
 **Stage skill**:
-A third-party skill, pinned in the Factory plugin, that an Agent Stage runs as its main instructions or may call in support. A Target repo may remove a Stage's skills but never add one.
+A pinned third-party skill whose text an Agent Stage runs after its Stage contract, as its main instructions or in support of them. A Target repo may remove a Stage's skills but never add one.
 _Avoid_: playbook, plugin skill (alone)
 
 **Check Stage**:

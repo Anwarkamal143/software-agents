@@ -4,14 +4,12 @@ import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /**
- * The Stage skills (ADR 0012): third-party skills pinned at an exact commit, shipped as their
- * own plugin beside the Factory plugin. A Stage runs one as its main instructions, after its
- * Stage contract, and may call the supporting ones it lists.
+ * The Stage skills (ADR 0012): third-party skills pinned at an exact commit, shipped in
+ * `stage-skills/` beside the Factory plugin. A Stage runs one as its main instructions, after its
+ * Stage contract, with the supporting ones it lists after that. All are appended to the system
+ * prompt, never called through the Skill tool, so every run has the same instructions.
  */
 export const STAGE_SKILLS_DIR = fileURLToPath(new URL("../../stage-skills", import.meta.url));
-
-/** The plugin's name, so a skill is `stage-skills:<name>` in a session's Skill listing. */
-export const STAGE_SKILLS_PLUGIN = "stage-skills";
 
 export interface PinnedSkill {
   source: string;
@@ -37,19 +35,19 @@ export function stageSkillDir(name: string, dir = STAGE_SKILLS_DIR): string {
 }
 
 /**
- * A main Stage skill's text for the system prompt, after the Stage contract. Says where its
- * other files are, since the skill names them by relative path. Throws for a skill that isn't
- * pinned, so a Stage never runs on instructions nobody reviewed.
+ * A Stage skill's text for the system prompt, after the Stage contract. Says where its other
+ * files are, since the skill names them by relative path. Throws for a skill that isn't pinned,
+ * so a Stage never runs on instructions nobody reviewed.
  */
-export function mainSkillText(name: string, dir = STAGE_SKILLS_DIR): string {
+export function stageSkillText(name: string, role: "main" | "supporting", dir = STAGE_SKILLS_DIR): string {
   const pinned = stageSkillsLock(dir)[name];
   const file = join(stageSkillDir(name, dir), "SKILL.md");
   if (!pinned || !existsSync(file)) throw new Error(`"${name}" isn't a pinned Stage skill (stage-skills/skills-lock.json).`);
   const body = readFileSync(file, "utf8").replace(/^---\n[\s\S]*?\n---\n+/, "");
   return [
-    `# Stage skill: ${name}`,
+    role === "main" ? `# Stage skill: ${name}` : `# Supporting Stage skill: ${name}`,
     "",
-    `From ${pinned.source} at ${pinned.commit.slice(0, 12)}. Its other files are in ${stageSkillDir(name, dir)}. Follow it where the Stage contract above allows; where they disagree, the Stage contract wins.`,
+    `From ${pinned.source} at ${pinned.commit.slice(0, 12)}. Its other files are in ${stageSkillDir(name, dir)}. ${role === "main" ? "Follow it" : "Use it alongside your Stage skill"} where the Stage contract above allows; where they disagree, the Stage contract wins.`,
     "",
     body,
   ].join("\n");
