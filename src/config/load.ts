@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { Ajv, type ErrorObject } from "ajv";
 import { parseDocument } from "yaml";
 import { pluginSkills, skillName } from "../agents/plugin.js";
-import { stageSkillNames } from "../agents/stage-skills.js";
+import { skillEntryProblem, stageSkillNames } from "../agents/stage-skills.js";
 import { BUILT_IN_RISK_RULES, FACTORY_WIDE_POLICY_KEYS, flatten } from "./policies.js";
 import type { WorkingCopy } from "../repos/clones.js";
 import type { FactoryConfig } from "./types.js";
@@ -85,6 +85,9 @@ function semanticProblems(config: FactoryConfig): string[] {
     for (const name of [...(stage.skill ? [stage.skill] : []), ...(stage.supporting ?? [])]) {
       if (!pinned.has(name)) problems.push(`Stage "${id}": "${name}" isn't a pinned Stage skill. Pin it with scripts/pin-stage-skill.mjs first (ADR 0012).`);
     }
+    if (stage.entry && !stage.skill) problems.push(`Stage "${id}": entry needs a main Stage skill to be in.`);
+    const entry = stage.skill && stage.entry && pinned.has(stage.skill) ? skillEntryProblem(stage.skill, stage.entry) : null;
+    if (entry) problems.push(`Stage "${id}": ${entry}`);
     if (stage.skill && stage.supporting?.includes(stage.skill)) problems.push(`Stage "${id}": "${stage.skill}" is its main Stage skill, so it can't be a supporting one too.`);
   }
 

@@ -15,13 +15,6 @@
       "license": "LICENSE",
       "hash": "a09631373f4ec905a81223576154c3273deb60caf95419a5db720ea551eb669a"
     },
-    "interrogate": {
-      "source": "cursor/plugins",
-      "path": "pstack/skills/interrogate",
-      "commit": "6b0300214a09fd6029cfb7077043125758cd1fd2",
-      "license": "pstack/LICENSE",
-      "hash": "a6e8c2b2a8a9fc35aa65912074aaf9d8e3befbfacbafc33fa74143f4bb020d87"
-    },
     "ponytail": {
       "source": "dietrichgebert/ponytail",
       "path": "skills/ponytail",

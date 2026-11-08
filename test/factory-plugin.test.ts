@@ -5,6 +5,7 @@ import type { AgentRunRequest } from "../src/agents/adapter.js";
 import { sessionOptions } from "../src/agents/claude.js";
 import { DEFAULT_STAGE_SKILLS, FACTORY_PLUGIN_DIR, pluginSkills, stageInstructions } from "../src/agents/plugin.js";
 import { skillHash, stageSkillText, STAGE_SKILLS_DIR, stageSkillDir, stageSkillNames, stageSkillsLock } from "../src/agents/stage-skills.js";
+import { STARTER_STAGES } from "../src/onboarding/config-edit.js";
 import { STAGE_RESULT_SCHEMA } from "../src/stages/result.js";
 
 const request = (instructions: string, tools: "read-only" | "write-branch" = "read-only", skills: { skill?: string; supporting?: string[] } = {}): AgentRunRequest => ({
@@ -77,6 +78,28 @@ describe("the Factory plugin", () => {
 
   test("a Stage skill that isn't pinned is refused", () => {
     expect(() => stageSkillText("unpinned-skill", "main")).toThrow(/isn't a pinned Stage skill/);
+  });
+
+  test("a main Stage skill can start from a Markdown file inside it, never outside", () => {
+    const text = stageSkillText("triage", "main", STAGE_SKILLS_DIR, "AGENT-BRIEF.md");
+    expect(text).toMatch(/starting from AGENT-BRIEF\.md/);
+    expect(text).toContain("# Writing Agent Briefs");
+    expect(() => stageSkillText("triage", "main", STAGE_SKILLS_DIR, "../super-build/SKILL.md")).toThrow(/inside Stage skill "triage"/);
+    expect(() => stageSkillText("triage", "main", STAGE_SKILLS_DIR, "LICENSE")).toThrow(/Markdown file/);
+    expect(() => stageSkillText("triage", "main", STAGE_SKILLS_DIR, "NOPE.md")).toThrow(/has no NOPE\.md/);
+  });
+
+  test("every starter Stage with a Stage skill has a contract that wins over it and rules out control steps (ADR 0012)", () => {
+    const withSkills = Object.entries(STARTER_STAGES).filter(([, s]) => s.kind === "agent" && s.skill);
+    expect(withSkills.map(([id]) => id)).toContain("triage");
+    for (const [id, stage] of withSkills) {
+      if (stage.kind !== "agent") continue;
+      const contract = stageInstructions(stage.instructions);
+      expect(contract, id).toMatch(/Where a Stage skill disagrees with this contract, this contract wins\./);
+      for (const step of ["pushing", "merging pull requests", "calling GitHub", "starting subagents", "stopping to ask a human mid-run"]) expect(contract, `${id}: ${step}`).toContain(step);
+      expect(() => stageSkillText(stage.skill!, "main", STAGE_SKILLS_DIR, stage.entry)).not.toThrow();
+      for (const s of stage.supporting ?? []) expect(() => stageSkillText(s, "supporting"), `${id}: ${s}`).not.toThrow();
+    }
   });
 });
 

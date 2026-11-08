@@ -182,6 +182,7 @@
           "kind": { "const": "agent" },
           "instructions": { "type": "string", "minLength": 1, "description": "The Stage contract, as factory:<name>." },
           "skill": { "type": "string", "minLength": 1, "description": "The main Stage skill, a pinned skill in stage-skills/, run after the Stage contract." },
+          "entry": { "type": "string", "pattern": "^[A-Za-z0-9_-][A-Za-z0-9_./-]*\\.md$", "description": "The Markdown file in the main Stage skill to start from. Default SKILL.md." },
           "supporting": {
             "description": "Pinned Stage skills the agent may call in support.",
             "type": "array",

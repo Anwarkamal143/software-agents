@@ -197,7 +197,7 @@ export class ClaudeAdapter implements AgentAdapter {
 export function sessionOptions(request: AgentRunRequest, ctx: { home: string; userHome: string; pluginDir: string; stageSkillsDir?: string; env: Record<string, string> }): Options {
   const wc = request.workingCopy;
   const skillsDir = ctx.stageSkillsDir ?? STAGE_SKILLS_DIR;
-  const { skill, supporting = [] } = request.brief;
+  const { skill, entry, supporting = [] } = request.brief;
   const profile = request.brief.tools;
   const writes = profile === "write-branch";
   const guard: HookCallback = async (input) => {
@@ -231,7 +231,7 @@ export function sessionOptions(request: AgentRunRequest, ctx: { home: string; us
       preset: "claude_code",
       append: [
         stageInstructions(request.brief.instructions, ctx.pluginDir),
-        ...(skill ? [stageSkillText(skill, "main", skillsDir)] : []),
+        ...(skill ? [stageSkillText(skill, "main", skillsDir, entry)] : []),
         ...supporting.map((name) => stageSkillText(name, "supporting", skillsDir)),
       ].join("\n\n"),
     },

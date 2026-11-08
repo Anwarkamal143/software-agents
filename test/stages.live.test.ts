@@ -3,7 +3,6 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentAdapter, AgentRunOutcome, AgentRunRequest, GuardDenial } from "../src/agents/adapter.js";
 import { ClaudeAdapter, FACTORY_PLUGIN_DIR } from "../src/agents/claude.js";
-import type { ToolProfile } from "../src/config/types.js";
 import { renderBrief, type EarlierResult, type StageBrief } from "../src/stages/brief.js";
 import { parseStageResult, STAGE_RESULT_SCHEMA, type StageResult } from "../src/stages/result.js";
 import { fail, ScriptedAgent } from "./fakes/agent.js";
@@ -23,8 +22,8 @@ const MODEL = process.env.FACTORY_LIVE_STAGE_MODEL ?? "claude-sonnet-5-5";
 const signIn = process.env.ANTHROPIC_API_KEY ? "api-key" : "subscription";
 const TIMEOUT = 600_000;
 
-const STAGES: Record<string, { instructions: string; tools: ToolProfile }> = {
-  triage: { instructions: "factory:triage", tools: "read-only" },
+const STAGES: Record<string, Pick<StageBrief, "instructions" | "skill" | "entry" | "supporting" | "tools">> = {
+  triage: { instructions: "factory:triage", skill: "triage", entry: "AGENT-BRIEF.md", supporting: ["unslop"], tools: "read-only" },
   build: { instructions: "factory:build", tools: "write-branch" },
   review: { instructions: "factory:review", tools: "read-only" },
   security: { instructions: "factory:security-review", tools: "read-only" },

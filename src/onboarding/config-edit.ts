@@ -9,7 +9,7 @@ const AFTER_CHECKS = ["review", "security"];
 
 /** The Stage library `factory init` starts with. */
 export const STARTER_STAGES: Record<string, Stage> = {
-  triage: { kind: "agent", instructions: "factory:triage", tools: "read-only" },
+  triage: { kind: "agent", instructions: "factory:triage", skill: "triage", entry: "AGENT-BRIEF.md", supporting: ["unslop"], tools: "read-only" },
   build: { kind: "agent", instructions: "factory:build", tools: "write-branch" },
   test: { kind: "check", run: "test", on_fail: "build" },
   review: { kind: "agent", instructions: "factory:review", tools: "read-only", on_fail: "build" },
