@@ -25,6 +25,9 @@ super-build: EricTechPro/super-board/skills/super-build at d0b7d5a68506
 super-review: EricTechPro/super-board/skills/super-review at d0b7d5a68506
   MIT License, Copyright (c) 2026 Eric Tech
 
+tdd: mattpocock/skills/skills/engineering/tdd at 4ae2317ddb22
+  MIT License, Copyright (c) 2026 Matt Pocock
+
 triage: mattpocock/skills/skills/engineering/triage at 4ae2317ddb22
   MIT License, Copyright (c) 2026 Matt Pocock
 

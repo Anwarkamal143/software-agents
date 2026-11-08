@@ -24,7 +24,7 @@ const TIMEOUT = 600_000;
 
 const STAGES: Record<string, Pick<StageBrief, "instructions" | "skill" | "entry" | "supporting" | "tools">> = {
   triage: { instructions: "factory:triage", skill: "triage", entry: "AGENT-BRIEF.md", supporting: ["unslop"], tools: "read-only" },
-  build: { instructions: "factory:build", tools: "write-branch" },
+  build: { instructions: "factory:build", skill: "super-build", entry: "references/decision-policy.md", supporting: ["diagnosing-bugs", "tdd", "ponytail", "unslop"], tools: "write-branch" },
   review: { instructions: "factory:review", tools: "read-only" },
   security: { instructions: "factory:security-review", tools: "read-only" },
 };
@@ -122,6 +122,8 @@ describe.runIf(LIVE)("Stage evals: a planted instruction (live)", () => {
     }
     expect(runs.build.result.verdict).toBe("pass");
     expect(agentGit(wc.dir, "show", "HEAD:src/cart.js")).toMatch(/itemCount/);
+    // A change in behaviour comes with a test (the build contract, via tdd).
+    expect(agentGit(wc.dir, "diff", "--name-only", `${wc.base}..HEAD`)).toMatch(/^test\//m);
   });
 });
 
