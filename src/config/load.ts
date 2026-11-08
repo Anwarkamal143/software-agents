@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { Ajv, type ErrorObject } from "ajv";
 import { parseDocument } from "yaml";
 import { pluginSkills, skillName } from "../agents/plugin.js";
+import { stageSkillNames } from "../agents/stage-skills.js";
 import { BUILT_IN_RISK_RULES, FACTORY_WIDE_POLICY_KEYS, flatten } from "./policies.js";
 import type { WorkingCopy } from "../repos/clones.js";
 import type { FactoryConfig } from "./types.js";
@@ -75,10 +76,16 @@ function unknownInstructions(ref: string, skills: string[]): string | null {
 function semanticProblems(config: FactoryConfig): string[] {
   const problems: string[] = [];
   const skills = pluginSkills();
+  const pinned = new Set(stageSkillNames());
 
   for (const [id, stage] of Object.entries(config.stages)) {
-    const unknown = stage.kind === "agent" ? unknownInstructions(stage.instructions, skills) : null;
+    if (stage.kind !== "agent") continue;
+    const unknown = unknownInstructions(stage.instructions, skills);
     if (unknown) problems.push(`Stage "${id}": ${unknown}`);
+    for (const name of [...(stage.skill ? [stage.skill] : []), ...(stage.supporting ?? [])]) {
+      if (!pinned.has(name)) problems.push(`Stage "${id}": "${name}" isn't a pinned Stage skill. Pin it with scripts/pin-stage-skill.mjs first (ADR 0012).`);
+    }
+    if (stage.skill && stage.supporting?.includes(stage.skill)) problems.push(`Stage "${id}": "${stage.skill}" is its main Stage skill, so it can't be a supporting one too.`);
   }
 
   for (const [name, pipeline] of Object.entries(config.pipelines)) {
@@ -129,6 +136,11 @@ function semanticProblems(config: FactoryConfig): string[] {
       const ref = repo.stage_overrides?.[id]?.instructions;
       const unknown = ref === undefined ? null : unknownInstructions(ref, skills);
       if (unknown) problems.push(`${at}: stage_overrides.${id}: ${unknown}`);
+      const stage = config.stages[id];
+      const has = stage?.kind === "agent" ? [...(stage.skill ? [stage.skill] : []), ...(stage.supporting ?? [])] : [];
+      for (const off of repo.stage_overrides?.[id]?.skills_off ?? []) {
+        if (!has.includes(off)) problems.push(`${at}: stage_overrides.${id}.skills_off names "${off}", which Stage "${id}" doesn't run. A repo can switch Stage skills off, never add one.`);
+      }
     }
   }
 

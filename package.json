@@ -13,7 +13,8 @@
   "files": [
     "dist",
     "schema",
-    "plugin"
+    "plugin",
+    "stage-skills"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

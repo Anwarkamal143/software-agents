@@ -161,3 +161,23 @@ describe("resolve: what each Check Stage gets", () => {
     expect(r.errors).toEqual(['Check Stage "lint" gets check secret NPM_TOKEN, but acme/web-app doesn\'t have it in check_secrets (add it with `factory secret set acme/web-app NPM_TOKEN`).']);
   });
 });
+
+describe("resolve: Stage skills (ADR 0012)", () => {
+  test("a Stage gets its library skills, less those the Target repo switched off", () => {
+    const config = draftConfig();
+    const review = config.stages.review!;
+    if (review.kind !== "agent") throw new Error("review should be an Agent Stage");
+    review.skill = "super-review";
+    review.supporting = ["ponytail-review", "blast-radius"];
+    const repo = config.repos.find((r) => r.name === "acme/web-app")!;
+    repo.stage_overrides = { review: { skills_off: ["blast-radius"] } };
+
+    const stage = resolve(config, job("acme/web-app")).stages.find((s) => s.id === "review");
+    expect(stage).toMatchObject({ skill: "super-review", supporting: ["ponytail-review"] });
+
+    repo.stage_overrides = { review: { skills_off: ["super-review"] } };
+    const without = resolve(config, job("acme/web-app")).stages.find((s) => s.id === "review");
+    expect(without).not.toHaveProperty("skill");
+    expect(without).toMatchObject({ supporting: ["ponytail-review", "blast-radius"] });
+  });
+});

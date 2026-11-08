@@ -52,6 +52,10 @@ _Avoid_: container, jail, isolation (alone)
 An allowed person applying the ready label to an issue, which is what admits it to the Factory. Who wrote the issue doesn't matter; an edit afterwards needs approval again unless an allowed person made it, even one made after the Job ended, which a later ready label doesn't approve.
 _Avoid_: intake, acceptance, triage
 
+**Collection**:
+A run outside any Job that looks for problems, such as errors in a monitoring tool, and files each one it verifies as an issue awaiting Job approval. It never admits work itself.
+_Avoid_: intake, discovery, scan
+
 **Pre-push check**:
 What the Orchestrator verifies about an agent's local commits before it pushes them to the Job branch itself. Agents never push.
 _Avoid_: pre-commit hook, push gate
@@ -115,6 +119,14 @@ _Avoid_: workflow, flow, lanes
 **Agent Stage**:
 A Stage carried out by an agent session following Factory plugin instructions.
 _Avoid_: lane, worker, agent step
+
+**Stage contract**:
+The part of an Agent Stage's instructions the Factory writes itself: what the agent may trust and do, the Stage result it returns and how it handles a Bounce. Where a Stage skill disagrees, the Stage contract wins.
+_Avoid_: wrapper, preamble, system prompt
+
+**Stage skill**:
+A third-party skill, pinned in the Factory plugin, that an Agent Stage runs as its main instructions or may call in support. A Target repo may remove a Stage's skills but never add one.
+_Avoid_: playbook, plugin skill (alone)
 
 **Check Stage**:
 A Stage carried out by a deterministic command the Orchestrator runs itself, with no agent involved.

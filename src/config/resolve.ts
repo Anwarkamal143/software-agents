@@ -14,6 +14,10 @@ export interface ResolvedStage {
   /** Agent Stages */
   model?: string;
   instructions?: string;
+  /** The main Stage skill, if the Stage has one and the repo didn't switch it off. */
+  skill?: string;
+  /** Supporting Stage skills, less any the repo switched off. */
+  supporting?: string[];
   tools?: ToolProfile;
   /** Check Stages: the repo's commands, empty if it has none. */
   commands?: string[];
@@ -146,6 +150,8 @@ export function resolve(config: FactoryConfig, job: JobInput): Resolution {
       return { id, kind: "check", commands, network, secrets, ...(stage.on_fail && { on_fail: stage.on_fail }), ...(stage.when && { when: stage.when }) };
     }
     const override = repo.stage_overrides?.[id];
+    const off = new Set(override?.skills_off ?? []);
+    const skill = stage.skill && !off.has(stage.skill) ? stage.skill : undefined;
     return {
       id,
       kind: "agent",
@@ -153,6 +159,8 @@ export function resolve(config: FactoryConfig, job: JobInput): Resolution {
       network: repo.network ?? [],
       model: override?.model ?? stage.model ?? repo.agent?.model ?? config.agent.model,
       instructions: override?.instructions ?? stage.instructions,
+      ...(skill && { skill }),
+      supporting: (stage.supporting ?? []).filter((s) => !off.has(s)),
       ...(stage.on_fail && { on_fail: stage.on_fail }),
       ...(stage.when && { when: stage.when }),
     };

@@ -4,12 +4,13 @@ import { join } from "node:path";
 import type { AgentRunRequest } from "../src/agents/adapter.js";
 import { sessionOptions } from "../src/agents/claude.js";
 import { DEFAULT_STAGE_SKILLS, FACTORY_PLUGIN_DIR, pluginSkills, stageInstructions } from "../src/agents/plugin.js";
+import { mainSkillText, skillHash, STAGE_SKILLS_DIR, stageSkillDir, stageSkillNames, stageSkillsLock } from "../src/agents/stage-skills.js";
 import { STAGE_RESULT_SCHEMA } from "../src/stages/result.js";
 
-const request = (instructions: string, tools: "read-only" | "write-branch" = "read-only"): AgentRunRequest => ({
+const request = (instructions: string, tools: "read-only" | "write-branch" = "read-only", skills: { skill?: string; supporting?: string[] } = {}): AgentRunRequest => ({
   job_id: "job-1",
   stage_run_id: "run-1",
-  brief: { stage: "review", instructions, tools } as AgentRunRequest["brief"],
+  brief: { stage: "review", instructions, tools, ...skills } as AgentRunRequest["brief"],
   renderedBrief: "brief",
   model: "claude-sonnet-5-5",
   workingCopy: { dir: "/w/repo", env: { HOME: "/w/home", XDG_CONFIG_HOME: "/w/home/.config", XDG_CACHE_HOME: "/w/cache", npm_config_cache: "/w/cache/npm", TMPDIR: "/w/tmp" }, objects: "/factory/repos/acme/app.git/objects" },
@@ -52,11 +53,58 @@ describe("the Factory plugin", () => {
     expect(() => stageInstructions("build")).toThrow(/factory:<name>/);
   });
 
-  test("the session gets its Stage's instructions as system prompt and no Skill listing", () => {
+  test("a Stage with no Stage skills gets its Stage contract as system prompt and no Skill listing", () => {
     const options = sessionOptions(request("factory:review"), ctx);
     expect(options.systemPrompt).toEqual({ type: "preset", preset: "claude_code", append: stageInstructions("factory:review") });
     expect(options.skills).toEqual([]);
-    expect(options.plugins).toEqual([{ type: "local", path: FACTORY_PLUGIN_DIR }]);
+    expect(options.plugins).toEqual([{ type: "local", path: FACTORY_PLUGIN_DIR }, { type: "local", path: STAGE_SKILLS_DIR }]);
     expect(options.managedSettings).toEqual({ disableAllHooks: true });
+  });
+
+  test("the main Stage skill follows the Stage contract, and only supporting skills are listed (ADR 0012)", () => {
+    const options = sessionOptions(request("factory:review", "read-only", { skill: "super-review", supporting: ["ponytail-review", "blast-radius"] }), ctx);
+    const append = (options.systemPrompt as { append: string }).append;
+    expect(append.startsWith(stageInstructions("factory:review"))).toBe(true);
+    expect(append.indexOf("# Stage skill: super-review")).toBeGreaterThan(stageInstructions("factory:review").length);
+    expect(append).toMatch(/the Stage contract wins/);
+    expect(append).not.toMatch(/^name: super-review$/m);
+    expect(options.skills).toEqual(["stage-skills:ponytail-review", "stage-skills:blast-radius"]);
+    expect(options.allowedTools).toContain("Skill");
+    expect(sessionOptions(request("factory:review", "read-only", { skill: "super-review" }), ctx).allowedTools).not.toContain("Skill");
+  });
+
+  test("a main Stage skill that isn't pinned is refused", () => {
+    expect(() => mainSkillText("unpinned-skill")).toThrow(/isn't a pinned Stage skill/);
+  });
+});
+
+describe("the Stage skills (ADR 0012)", () => {
+  test("are instructions only: no hooks, MCP servers, agents or scripts", () => {
+    const manifest = JSON.parse(readFileSync(join(STAGE_SKILLS_DIR, ".claude-plugin", "plugin.json"), "utf8")) as Record<string, unknown>;
+    expect(manifest.name).toBe("stage-skills");
+    for (const key of ["hooks", "mcpServers", "agents", "commands", "lspServers"]) expect(manifest).not.toHaveProperty(key);
+    expect(readdirSync(STAGE_SKILLS_DIR).sort()).toEqual([".claude-plugin", "NOTICE", "skills", "skills-lock.json"]);
+    const files = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? files(join(dir, e.name)) : [e.name]));
+    for (const name of stageSkillNames()) {
+      for (const file of files(stageSkillDir(name))) expect(file, `${name}/${file}`).toMatch(/\.md$|^LICENSE$/);
+    }
+  });
+
+  test("every pinned skill matches its lock entry, so nobody edits one by hand", () => {
+    const lock = stageSkillsLock();
+    expect(readdirSync(join(STAGE_SKILLS_DIR, "skills")).sort()).toEqual(stageSkillNames());
+    for (const [name, pinned] of Object.entries(lock)) {
+      expect(pinned.commit, name).toMatch(/^[0-9a-f]{40}$/);
+      expect(skillHash(stageSkillDir(name)), name).toBe(pinned.hash);
+      expect(existsSync(join(stageSkillDir(name), "LICENSE")), name).toBe(true);
+      expect(readFileSync(join(stageSkillDir(name), "SKILL.md"), "utf8"), name).toMatch(new RegExp(`^---\\n[\\s\\S]*?^name: ${name}$`, "m"));
+    }
+  });
+
+  test("every pinned skill is credited in the NOTICE", () => {
+    const notice = readFileSync(join(STAGE_SKILLS_DIR, "NOTICE"), "utf8");
+    for (const [name, pinned] of Object.entries(stageSkillsLock())) {
+      expect(notice, name).toContain(`${name}: ${pinned.source}`);
+    }
   });
 });

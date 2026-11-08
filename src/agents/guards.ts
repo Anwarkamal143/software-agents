@@ -9,6 +9,8 @@ export interface GuardContext {
   factoryHome: string;
   /** Your home, whose credential folders no session reads. */
   userHome: string;
+  /** Folders the read tools may also look in, such as the pinned Stage skills (ADR 0012). */
+  readable?: string[];
 }
 
 /**
@@ -29,10 +31,14 @@ export function checkToolCall(tool: string, input: Record<string, unknown>, ctx:
     if (SECRET_IN_PATH.test(value)) return deny("secret-file", `${value} is a secret file`);
     if (key === "pattern" || key === "glob") continue;
     const target = resolveIn(value, ctx);
+    if (READ_TOOLS.has(tool) && ctx.readable?.some((dir) => inside(target, dir))) continue;
     if (!inside(target, ctx.workingCopy)) return deny("outside-working-copy", `${value} is outside the Working copy`);
   }
   return null;
 }
+
+/** Tools that only read, so they may look in `readable` folders too. */
+const READ_TOOLS = new Set(["Read", "Glob", "Grep"]);
 
 /** Tool input fields that hold a path or a file pattern. */
 const PATH_KEYS = new Set(["file_path", "notebook_path", "path", "pattern", "glob"]);

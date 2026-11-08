@@ -1,0 +1,5 @@
+{
+  "name": "stage-skills",
+  "version": "0.1.0",
+  "description": "Pinned third-party skills that Factory Stages run inside their Stage contract. Instructions only: no hooks, MCP servers, agents or scripts (ADR 0012)."
+}

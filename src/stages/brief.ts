@@ -23,13 +23,17 @@ export interface HumanAnswer {
 }
 
 /**
- * Everything the Orchestrator hands a Stage run (Stage contract, #7). Agents
+ * Everything the Orchestrator hands a Stage run (the Stage brief, #7). Agents
  * never fetch any of it themselves.
  */
 export interface StageBrief {
   stage: string;
-  /** A Factory plugin reference such as `factory:build`. */
+  /** The Stage contract: a Factory plugin reference such as `factory:build`. */
   instructions: string;
+  /** The main Stage skill, run after the Stage contract (ADR 0012). */
+  skill?: string;
+  /** Stage skills the session may call. */
+  supporting?: string[];
   tools: ToolProfile;
   repo: string;
   /** Untrusted: whoever opened the issue wrote it. */

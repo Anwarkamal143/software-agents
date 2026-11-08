@@ -16,6 +16,15 @@ function context(): GuardContext {
 const guard = (ctx: GuardContext, tool: string, input: Record<string, unknown>) => checkToolCall(tool, input, ctx)?.guard ?? null;
 
 describe("Guards", () => {
+  test("the read tools may look in a readable folder, such as the Stage skills; nothing may write there", () => {
+    const ctx = { ...context(), readable: ["/opt/factory/stage-skills"] };
+    expect(guard(ctx, "Read", { file_path: "/opt/factory/stage-skills/skills/super-build/references/worker-preamble.md" })).toBeNull();
+    expect(guard(ctx, "Grep", { pattern: "gate", path: "/opt/factory/stage-skills/skills" })).toBeNull();
+    expect(guard(ctx, "Write", { file_path: "/opt/factory/stage-skills/skills/super-build/SKILL.md", content: "x" })).toBe("outside-working-copy");
+    expect(guard(ctx, "Edit", { file_path: "/opt/factory/stage-skills/skills-lock.json", old_string: "a", new_string: "b" })).toBe("outside-working-copy");
+    expect(guard(ctx, "Read", { file_path: "/opt/factory/stage-skills/../secrets.json" })).toBe("outside-working-copy");
+  });
+
   test("reading or writing a .env file is a secret-file denial, wherever it is", () => {
     const ctx = context();
     expect(guard(ctx, "Read", { file_path: join(ctx.workingCopy, ".env") })).toBe("secret-file");

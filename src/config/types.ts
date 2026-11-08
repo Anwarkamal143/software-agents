@@ -49,7 +49,12 @@ export interface StageCondition {
 
 export interface AgentStage {
   kind: "agent";
+  /** The Stage contract: a Factory plugin reference such as `factory:build`. */
   instructions: string;
+  /** The main Stage skill, run after the Stage contract (ADR 0012). */
+  skill?: string;
+  /** Stage skills the agent may call in support. */
+  supporting?: string[];
   tools: ToolProfile;
   model?: string;
   /** The earlier Stage a fail Verdict Bounces to. */
@@ -89,8 +94,8 @@ export interface TargetRepo {
   /** How the Factory merges this repo's PRs. Default squash. */
   merge_method?: MergeMethod;
   policies?: OwnerPolicyPatch & { budgets?: PolicyPatch["budgets"] };
-  /** A repo may change only `model` and `instructions` of a library Stage. */
-  stage_overrides?: Record<string, { model?: string; instructions?: string }>;
+  /** A repo may change only `model` and `instructions` of a library Stage, and switch its Stage skills off (never add one, ADR 0012). */
+  stage_overrides?: Record<string, { model?: string; instructions?: string; skills_off?: string[] }>;
   agent?: { model?: string; auth?: string };
   /** Present only so `factory config check` can name it: the Job store and Mirrors are Factory-wide. */
   state?: unknown;

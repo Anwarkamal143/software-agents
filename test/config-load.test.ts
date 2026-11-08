@@ -118,6 +118,36 @@ describe("loadConfig: Stage instructions", () => {
   });
 });
 
+describe("loadConfig: Stage skills (ADR 0012)", () => {
+  const withSkills = (skills: string) => fixture("minimal.yaml").replace("instructions: factory:review", `instructions: factory:review, ${skills}`);
+
+  test("a Stage may run pinned Stage skills", () => {
+    const r = loadConfig(withSkills("skill: super-review, supporting: [ponytail-review]"));
+    expect(r.ok ? [] : r.problems).toEqual([]);
+  });
+
+  test("a skill that isn't pinned is refused, main or supporting", () => {
+    const r = loadConfig(withSkills("skill: be-nice, supporting: [ponytail-review, wander]"));
+    expect(r.ok ? [] : r.problems).toEqual([
+      'Stage "review": "be-nice" isn\'t a pinned Stage skill. Pin it with scripts/pin-stage-skill.mjs first (ADR 0012).',
+      'Stage "review": "wander" isn\'t a pinned Stage skill. Pin it with scripts/pin-stage-skill.mjs first (ADR 0012).',
+    ]);
+  });
+
+  test("the main skill can't also be a supporting one", () => {
+    const r = loadConfig(withSkills("skill: super-review, supporting: [super-review]"));
+    expect(r.ok ? [] : r.problems).toEqual(['Stage "review": "super-review" is its main Stage skill, so it can\'t be a supporting one too.']);
+  });
+
+  test("a Target repo can switch a Stage's skills off but never add one", () => {
+    const yaml = withSkills("skill: super-review, supporting: [ponytail-review]").replace(/( {2}- name: [^\n]+\n)/, "$1    stage_overrides: { review: { skills_off: [ponytail-review, blast-radius] } }\n");
+    const r = loadConfig(yaml);
+    expect(r.ok ? [] : r.problems).toEqual([
+      'Target repo acme/web-app: stage_overrides.review.skills_off names "blast-radius", which Stage "review" doesn\'t run. A repo can switch Stage skills off, never add one.',
+    ]);
+  });
+});
+
 describe("loadConfig: merge_method", () => {
   test("only squash, merge or rebase", () => {
     const with_ = (m: string) => loadConfig(fixture("minimal.yaml").replace(/( {2}- name: [^\n]+\n)/, `$1    merge_method: ${m}\n`));
