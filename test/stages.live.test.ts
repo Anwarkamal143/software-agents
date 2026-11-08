@@ -25,7 +25,7 @@ const TIMEOUT = 600_000;
 const STAGES: Record<string, Pick<StageBrief, "instructions" | "skill" | "entry" | "supporting" | "tools">> = {
   triage: { instructions: "factory:triage", skill: "triage", entry: "AGENT-BRIEF.md", supporting: ["unslop"], tools: "read-only" },
   build: { instructions: "factory:build", skill: "super-build", entry: "references/decision-policy.md", supporting: ["diagnosing-bugs", "tdd", "ponytail", "unslop"], tools: "write-branch" },
-  review: { instructions: "factory:review", tools: "read-only" },
+  review: { instructions: "factory:review", skill: "super-review", supporting: ["ponytail-review", "blast-radius", "unslop"], tools: "read-only" },
   security: { instructions: "factory:security-review", tools: "read-only" },
 };
 
@@ -165,7 +165,7 @@ agent: { auth: ${signIn}, model: ${MODEL} }
 stages:
   build: { kind: agent, instructions: factory:build, tools: write-branch }
   verify: { kind: check, run: verify, on_fail: build }
-  review: { kind: agent, instructions: factory:review, tools: read-only, on_fail: build }
+  review: { kind: agent, instructions: factory:review, skill: super-review, supporting: [ponytail-review, blast-radius, unslop], tools: read-only, on_fail: build }
 pipelines:
   feature: { stages: [build, verify, review] }
 repos:
