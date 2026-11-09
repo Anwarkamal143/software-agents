@@ -10,9 +10,6 @@ blast-radius: cursor/plugins/pstack/skills/blast-radius at 6b0300214a09
 diagnosing-bugs: mattpocock/skills/skills/engineering/diagnosing-bugs at 4ae2317ddb22
   MIT License, Copyright (c) 2026 Matt Pocock
 
-interrogate: cursor/plugins/pstack/skills/interrogate at 6b0300214a09
-  MIT License, Copyright (c) 2026 Lauren Tan
-
 ponytail: dietrichgebert/ponytail/skills/ponytail at 96608e078b2d
   MIT License, Copyright (c) 2026 DietrichGebert
 
@@ -27,6 +24,9 @@ super-build: EricTechPro/super-board/skills/super-build at d0b7d5a68506
 
 super-review: EricTechPro/super-board/skills/super-review at d0b7d5a68506
   MIT License, Copyright (c) 2026 Eric Tech
+
+tdd: mattpocock/skills/skills/engineering/tdd at 4ae2317ddb22
+  MIT License, Copyright (c) 2026 Matt Pocock
 
 triage: mattpocock/skills/skills/engineering/triage at 4ae2317ddb22
   MIT License, Copyright (c) 2026 Matt Pocock

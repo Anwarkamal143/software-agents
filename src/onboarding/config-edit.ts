@@ -9,11 +9,11 @@ const AFTER_CHECKS = ["review", "security"];
 
 /** The Stage library `factory init` starts with. */
 export const STARTER_STAGES: Record<string, Stage> = {
-  triage: { kind: "agent", instructions: "factory:triage", tools: "read-only" },
-  build: { kind: "agent", instructions: "factory:build", tools: "write-branch" },
+  triage: { kind: "agent", instructions: "factory:triage", skill: "triage", entry: "AGENT-BRIEF.md", supporting: ["unslop"], tools: "read-only" },
+  build: { kind: "agent", instructions: "factory:build", skill: "super-build", entry: "references/decision-policy.md", supporting: ["diagnosing-bugs", "tdd", "ponytail", "unslop"], tools: "write-branch" },
   test: { kind: "check", run: "test", on_fail: "build" },
-  review: { kind: "agent", instructions: "factory:review", tools: "read-only", on_fail: "build" },
-  security: { kind: "agent", instructions: "factory:security-review", tools: "read-only", on_fail: "build" },
+  review: { kind: "agent", instructions: "factory:review", skill: "super-review", supporting: ["ponytail-review", "blast-radius", "unslop"], tools: "read-only", on_fail: "build" },
+  security: { kind: "agent", instructions: "factory:security-review", skill: "pr-security-review", supporting: ["unslop"], tools: "read-only", on_fail: "build" },
 };
 
 /** The `factory.yaml` that `factory init` writes: you as the one allowed human, the default Stages, no repos yet. */

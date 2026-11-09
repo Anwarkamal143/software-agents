@@ -134,6 +134,14 @@ describe("loadConfig: Stage skills (ADR 0012)", () => {
     ]);
   });
 
+  test("an entry must be a Markdown file in the main Stage skill", () => {
+    expect(loadConfig(withSkills("skill: triage, entry: AGENT-BRIEF.md")).ok).toBe(true);
+    const r = loadConfig(withSkills("skill: triage, entry: MISSING.md"));
+    expect(r.ok ? [] : r.problems).toEqual(['Stage "review": Stage skill "triage" has no MISSING.md.']);
+    const orphan = loadConfig(withSkills("entry: AGENT-BRIEF.md"));
+    expect(orphan.ok ? [] : orphan.problems).toEqual(['Stage "review": entry needs a main Stage skill to be in.']);
+  });
+
   test("the main skill can't also be a supporting one", () => {
     const r = loadConfig(withSkills("skill: super-review, supporting: [super-review]"));
     expect(r.ok ? [] : r.problems).toEqual(['Stage "review": "super-review" is its main Stage skill, so it can\'t be a supporting one too.']);

@@ -53,6 +53,8 @@ export interface AgentStage {
   instructions: string;
   /** The main Stage skill, run after the Stage contract (ADR 0012). */
   skill?: string;
+  /** The file in the main Stage skill to start from, when it isn't SKILL.md (such as a worker's part of a dispatcher skill). */
+  entry?: string;
   /** Stage skills the agent may call in support. */
   supporting?: string[];
   tools: ToolProfile;

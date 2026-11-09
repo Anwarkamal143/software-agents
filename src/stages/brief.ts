@@ -32,6 +32,8 @@ export interface StageBrief {
   instructions: string;
   /** The main Stage skill, run after the Stage contract (ADR 0012). */
   skill?: string;
+  /** The file in it to start from, when it isn't SKILL.md. */
+  entry?: string;
   /** Stage skills the session may call. */
   supporting?: string[];
   tools: ToolProfile;

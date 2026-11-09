@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /**
@@ -35,22 +35,34 @@ export function stageSkillDir(name: string, dir = STAGE_SKILLS_DIR): string {
 }
 
 /**
- * A Stage skill's text for the system prompt, after the Stage contract. Says where its other
- * files are, since the skill names them by relative path. Throws for a skill that isn't pinned,
- * so a Stage never runs on instructions nobody reviewed.
+ * A Stage skill's text for the system prompt, after the Stage contract: its SKILL.md, or `entry`
+ * inside it. Says where its other files are, since the skill names them by relative path. Throws
+ * for a skill that isn't pinned, so a Stage never runs on instructions nobody reviewed.
  */
-export function stageSkillText(name: string, role: "main" | "supporting", dir = STAGE_SKILLS_DIR): string {
+export function stageSkillText(name: string, role: "main" | "supporting", dir = STAGE_SKILLS_DIR, entry = "SKILL.md"): string {
   const pinned = stageSkillsLock(dir)[name];
-  const file = join(stageSkillDir(name, dir), "SKILL.md");
-  if (!pinned || !existsSync(file)) throw new Error(`"${name}" isn't a pinned Stage skill (stage-skills/skills-lock.json).`);
-  const body = readFileSync(file, "utf8").replace(/^---\n[\s\S]*?\n---\n+/, "");
+  if (!pinned) throw new Error(`"${name}" isn't a pinned Stage skill (stage-skills/skills-lock.json).`);
+  const problem = skillEntryProblem(name, entry, dir);
+  if (problem) throw new Error(problem);
+  const body = readFileSync(join(stageSkillDir(name, dir), entry), "utf8").replace(/^---\n[\s\S]*?\n---\n+/, "");
+  const from = entry === "SKILL.md" ? "" : `, starting from ${entry}`;
   return [
     role === "main" ? `# Stage skill: ${name}` : `# Supporting Stage skill: ${name}`,
     "",
-    `From ${pinned.source} at ${pinned.commit.slice(0, 12)}. Its other files are in ${stageSkillDir(name, dir)}. ${role === "main" ? "Follow it" : "Use it alongside your Stage skill"} where the Stage contract above allows; where they disagree, the Stage contract wins.`,
+    `From ${pinned.source} at ${pinned.commit.slice(0, 12)}${from}. Its other files are in ${stageSkillDir(name, dir)}. ${role === "main" ? "Follow it" : "Use it alongside your Stage skill"} where the Stage contract above allows; where they disagree, the Stage contract wins.`,
     "",
     body,
   ].join("\n");
+}
+
+/** Why `entry` can't be where a Stage starts in skill `name`, or null if it can. */
+export function skillEntryProblem(name: string, entry: string, dir = STAGE_SKILLS_DIR): string | null {
+  const root = stageSkillDir(name, dir);
+  const file = resolve(root, entry);
+  const rel = relative(root, file);
+  if (!entry.endsWith(".md") || rel.startsWith("..") || isAbsolute(rel)) return `entry "${entry}" must be a Markdown file inside Stage skill "${name}".`;
+  if (!existsSync(file)) return `Stage skill "${name}" has no ${entry}.`;
+  return null;
 }
 
 /** Hash of a pinned skill's files: path and bytes, in path order. `scripts/pin-stage-skill.mjs` writes the same. */

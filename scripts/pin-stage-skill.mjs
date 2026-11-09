@@ -2,6 +2,7 @@
 // Pins one third-party skill into stage-skills/ at an exact commit (ADR 0012).
 //
 //   node scripts/pin-stage-skill.mjs <owner/repo> <path/to/skill> [name] [--ref <commit>]
+//   node scripts/pin-stage-skill.mjs --unpin <name>
 //
 // Copies the skill's Markdown files and the nearest LICENSE at that commit, and records
 // source, commit and hash in stage-skills/skills-lock.json. Scripts and other files are left
@@ -17,6 +18,16 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "stage-skills")
 const LOCK = join(ROOT, "skills-lock.json");
 
 const args = process.argv.slice(2);
+if (args[0] === "--unpin") {
+  const lock = JSON.parse(readFileSync(LOCK, "utf8"));
+  if (!lock.skills[args[1]]) throw new Error(`"${args[1]}" isn't pinned.`);
+  delete lock.skills[args[1]];
+  rmSync(join(ROOT, "skills", args[1]), { recursive: true, force: true });
+  writeFileSync(LOCK, `${JSON.stringify(lock, null, 2)}\n`);
+  writeNotice(lock.skills);
+  console.log(`Unpinned ${args[1]}. Check no Stage still names it: npx factory config check.`);
+  process.exit(0);
+}
 const refAt = args.indexOf("--ref");
 const ref = refAt === -1 ? null : args.splice(refAt, 2)[1];
 const [repo, path, name = path?.split("/").pop()] = args;

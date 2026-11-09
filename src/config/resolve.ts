@@ -16,6 +16,8 @@ export interface ResolvedStage {
   instructions?: string;
   /** The main Stage skill, if the Stage has one and the repo didn't switch it off. */
   skill?: string;
+  /** The file in the main Stage skill to start from, when it isn't SKILL.md. */
+  entry?: string;
   /** Supporting Stage skills, less any the repo switched off. */
   supporting?: string[];
   tools?: ToolProfile;
@@ -159,7 +161,7 @@ export function resolve(config: FactoryConfig, job: JobInput): Resolution {
       network: repo.network ?? [],
       model: override?.model ?? stage.model ?? repo.agent?.model ?? config.agent.model,
       instructions: override?.instructions ?? stage.instructions,
-      ...(skill && { skill }),
+      ...(skill && { skill, ...(stage.entry && { entry: stage.entry }) }),
       supporting: (stage.supporting ?? []).filter((s) => !off.has(s)),
       ...(stage.on_fail && { on_fail: stage.on_fail }),
       ...(stage.when && { when: stage.when }),

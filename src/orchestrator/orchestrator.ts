@@ -817,7 +817,7 @@ export class Orchestrator {
     const brief: StageBrief = {
       stage: stage.id,
       instructions: stage.instructions!,
-      ...(stage.skill && { skill: stage.skill }),
+      ...(stage.skill && { skill: stage.skill, ...(stage.entry && { entry: stage.entry }) }),
       supporting: stage.supporting ?? [],
       tools: stage.tools!,
       repo: job.repo,
