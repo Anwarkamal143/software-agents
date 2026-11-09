@@ -50,6 +50,13 @@
       "license": "LICENSE",
       "hash": "4db6bc37d742b15eaf067e3146f001a56aaebb843ea9f300174cfbb033a2d957"
     },
+    "tdd": {
+      "source": "mattpocock/skills",
+      "path": "skills/engineering/tdd",
+      "commit": "4ae2317ddb22b046e26455e4f9c9b3aaaf62212d",
+      "license": "LICENSE",
+      "hash": "b2c88cedd3f345c26cb346774861fd9458b69d71e747757ca379356e31affffa"
+    },
     "triage": {
       "source": "mattpocock/skills",
       "path": "skills/engineering/triage",
