@@ -3,7 +3,7 @@ import type { AgentRunOutcome, AgentRunRequest } from "../src/agents/adapter.js"
 import { JobStoreUnwritable } from "../src/orchestrator/orchestrator.js";
 import type { JobStore } from "../src/store/job-store.js";
 import { approved } from "./fakes/source.js";
-import { building, errored, hangs, pass, ScriptedAgent } from "./fakes/agent.js";
+import { building, errored, fail, finding, hangs, pass, ScriptedAgent } from "./fakes/agent.js";
 import { fakeFactory, expectAtMergeGate } from "./helpers/factory.js";
 
 const tick = (ms = 5) => new Promise((r) => setTimeout(r, ms));
@@ -173,6 +173,28 @@ describe("Orchestrator: watching a Stage run", () => {
     expect(f.agent.stagesRun()).toEqual(["triage"]);
     expect(f.log.store.read().find((e) => e.type === "stage-passed")?.data.stage).toBe("triage");
     expect(f.onlyJob()).toMatchObject({ status: "paused", reason: "plan-limit" });
+  });
+
+  test("a fail Verdict from the run that passed 90% Bounces once the plan limit resets, instead of being dropped", async () => {
+    const time = clock();
+    const resets_at = new Date(Date.now() + 60 * 60_000).toISOString();
+    const warnedFail = (req: AgentRunRequest): AgentRunOutcome => {
+      req.events.rateLimit({ status: "allowed_warning", utilization: 0.98, resets_at });
+      return fail("Found a bug.", [{ ...finding("discount-wrong"), severity: "error" }]);
+    };
+    const f = fakeFactory(new ScriptedAgent({ build: [building, building], review: [warnedFail] }), undefined, { now: time.now });
+    f.source.push(approved(7));
+
+    await f.orchestrator.runUntilIdle();
+    expect(f.onlyJob()).toMatchObject({ status: "paused", reason: "plan-limit" });
+    expect(f.log.store.read().filter((e) => e.type === "transition-rejected")).toEqual([]);
+
+    time.advance(61 * 60_000);
+    await f.orchestrator.runUntilIdle();
+
+    const events = f.log.store.read();
+    expect(events.find((e) => e.type === "bounced")).toMatchObject({ data: { from: "review", to: "build", bounce: 1 } });
+    expect(f.agent.stagesRun()).toEqual(["triage", "build", "review", "build", "review", "security"]);
   });
 
   test("an allowed_warning under 90% changes nothing", async () => {

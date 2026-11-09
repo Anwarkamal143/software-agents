@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 import { join } from "node:path";
 import { computeJobs, JobProjection } from "../src/jobs/projection.js";
 import { openSqliteJobStore } from "../src/store/sqlite-job-store.js";
-import { STATUS_FIXTURES } from "./fixtures/logs.js";
+import { jobLog, STATUS_FIXTURES } from "./fixtures/logs.js";
 import { tmpHome } from "./helpers/tmp.js";
 
 describe("Job projection", () => {
@@ -12,6 +12,24 @@ describe("Job projection", () => {
 
     const jobs = computeJobs(store.read());
     expect(jobs.get(fixture.expected.job_id)).toMatchObject(fixture.expected);
+  });
+
+  test("a Bounce recorded while a Job is paused moves its Stage and keeps the pause, whatever its reason", () => {
+    const store = openSqliteJobStore(join(tmpHome(), "factory.db"));
+    const log = jobLog("job-b", [["job-approved", { repo: "acme/web-app", issue: 8 }], ["attempt-started", { branch: "factory/8" }], ["stage-started", { stage: "review" }]]);
+    for (const event of log) store.append(event);
+    store.append({ type: "plan-limit-hit", actor: "orchestrator", data: {} });
+    for (const event of jobLog("job-b", [["stage-failed", { stage: "review" }], ["bounced", { from: "review", to: "build", bounce: 1 }]])) store.append({ ...event, attempt: 1 });
+    expect(computeJobs(store.read()).get("job-b")).toMatchObject({ status: "paused", reason: "plan-limit", stage: "build" });
+
+    store.append({ type: "plan-limit-reset", actor: "orchestrator" });
+    expect(computeJobs(store.read()).get("job-b")).toMatchObject({ status: "queued", reason: null, stage: "build" });
+
+    // A budget pause isn't lifted by a Bounce either.
+    const budget = openSqliteJobStore(join(tmpHome(), "factory.db"));
+    for (const event of STATUS_FIXTURES.paused.log) budget.append(event);
+    for (const event of jobLog("job-p", [["bounced", { from: "review", to: "build", bounce: 1 }]])) budget.append({ ...event, attempt: 1 });
+    expect(computeJobs(budget.read()).get("job-p")).toMatchObject({ status: "paused", reason: "budget", stage: "build" });
   });
 
   test("a plan-limit hit parks queued Jobs and leaves running ones to finish; its reset releases only those", () => {
