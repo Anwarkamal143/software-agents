@@ -6,6 +6,7 @@ import { SandboxUnavailable, srtSandbox, type Sandbox } from "../stages/check-ru
 import type { AgentAdapter, AgentRunOutcome, AgentRunRequest, MeasuredFacts } from "./adapter.js";
 import { checkToolCall } from "./guards.js";
 import { stageInstructions } from "./plugin.js";
+import { STAGE_SKILLS_DIR, stageSkillText } from "./stage-skills.js";
 import { Transcripts } from "./transcript.js";
 
 export { FACTORY_PLUGIN_DIR } from "./plugin.js";
@@ -22,6 +23,8 @@ export interface ClaudeAdapterOptions {
   apiKey?: () => Promise<string | null>;
   /** The Factory plugin: Stage instructions only, no hooks (ADR 0007). */
   pluginDir: string;
+  /** The pinned Stage skills (ADR 0012). Default: `stage-skills/` beside the Factory plugin. */
+  stageSkillsDir?: string;
   /** Exact values never to write to a Transcript, by name: Factory credentials and check secrets (ADR 0009). */
   secrets?: () => Promise<Record<string, string>>;
   /** Checked before every session: the Factory never runs one unsandboxed (ADR 0007). */
@@ -97,7 +100,7 @@ export class ClaudeAdapter implements AgentAdapter {
     let transient = false;
     const started = Date.now();
     try {
-      const options = { ...sessionOptions(request, { home: this.options.home, userHome: this.userHome, pluginDir: this.options.pluginDir, env }), abortController: controller };
+      const options = { ...sessionOptions(request, { home: this.options.home, userHome: this.userHome, pluginDir: this.options.pluginDir, ...(this.options.stageSkillsDir && { stageSkillsDir: this.options.stageSkillsDir }), env }), abortController: controller };
       const prompt = request.resume ? request.resume.input : request.renderedBrief;
       for await (const message of this.query({ prompt, options: request.resume ? { ...options, resume: request.resume.session_id } : options })) {
         request.events.activity();
@@ -191,14 +194,16 @@ export class ClaudeAdapter implements AgentAdapter {
 }
 
 /** Everything the adapter sets on a session, apart from the abort controller and resume. */
-export function sessionOptions(request: AgentRunRequest, ctx: { home: string; userHome: string; pluginDir: string; env: Record<string, string> }): Options {
+export function sessionOptions(request: AgentRunRequest, ctx: { home: string; userHome: string; pluginDir: string; stageSkillsDir?: string; env: Record<string, string> }): Options {
   const wc = request.workingCopy;
+  const skillsDir = ctx.stageSkillsDir ?? STAGE_SKILLS_DIR;
+  const { skill, entry, supporting = [] } = request.brief;
   const profile = request.brief.tools;
   const writes = profile === "write-branch";
   const guard: HookCallback = async (input) => {
     if (input.hook_event_name !== "PreToolUse") return {};
     const toolInput = input.tool_input && typeof input.tool_input === "object" ? (input.tool_input as Record<string, unknown>) : {};
-    const denial = checkToolCall(input.tool_name, toolInput, { workingCopy: wc.dir, factoryHome: ctx.home, userHome: ctx.userHome });
+    const denial = checkToolCall(input.tool_name, toolInput, { workingCopy: wc.dir, factoryHome: ctx.home, userHome: ctx.userHome, readable: [skillsDir] });
     if (!denial) return {};
     request.events.guardBlocked(denial);
     return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: `Guard (${denial.guard}): ${denial.why}` } };
@@ -219,8 +224,17 @@ export function sessionOptions(request: AgentRunRequest, ctx: { home: string; us
     mcpServers: {},
     managedSettings: { disableAllHooks: true },
     plugins: [{ type: "local", path: ctx.pluginDir }],
-    // The Stage's own instructions, always in force; no Skill listing, so it can't wander into another Stage's.
-    systemPrompt: { type: "preset", preset: "claude_code", append: stageInstructions(request.brief.instructions, ctx.pluginDir) },
+    // The Stage contract, then its main and supporting Stage skills, always in force (ADR 0012).
+    // No Skill listing, so it can't wander into another Stage's contract or skip one of its own.
+    systemPrompt: {
+      type: "preset",
+      preset: "claude_code",
+      append: [
+        stageInstructions(request.brief.instructions, ctx.pluginDir),
+        ...(skill ? [stageSkillText(skill, "main", skillsDir, entry)] : []),
+        ...supporting.map((name) => stageSkillText(name, "supporting", skillsDir)),
+      ].join("\n\n"),
+    },
     skills: [],
     permissionMode: "default",
     allowedTools: TOOLS[profile],

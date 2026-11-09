@@ -1,0 +1,35 @@
+Stage skills
+
+Each skill under skills/ is a copy of a third-party skill, pinned at the commit below and
+unchanged except that only its Markdown files and LICENSE are kept. Each keeps its own
+LICENSE file. skills-lock.json records the exact source, path, commit and hash.
+
+blast-radius: cursor/plugins/pstack/skills/blast-radius at 6b0300214a09
+  MIT License, Copyright (c) 2026 Lauren Tan
+
+diagnosing-bugs: mattpocock/skills/skills/engineering/diagnosing-bugs at 4ae2317ddb22
+  MIT License, Copyright (c) 2026 Matt Pocock
+
+ponytail: dietrichgebert/ponytail/skills/ponytail at 96608e078b2d
+  MIT License, Copyright (c) 2026 DietrichGebert
+
+ponytail-review: dietrichgebert/ponytail/skills/ponytail-review at 96608e078b2d
+  MIT License, Copyright (c) 2026 DietrichGebert
+
+pr-security-review: EricTechPro/super-board/skills/pr-security-review at d0b7d5a68506
+  MIT License, Copyright (c) 2025 Anthropic
+
+super-build: EricTechPro/super-board/skills/super-build at d0b7d5a68506
+  MIT License, Copyright (c) 2026 Eric Tech
+
+super-review: EricTechPro/super-board/skills/super-review at d0b7d5a68506
+  MIT License, Copyright (c) 2026 Eric Tech
+
+tdd: mattpocock/skills/skills/engineering/tdd at 4ae2317ddb22
+  MIT License, Copyright (c) 2026 Matt Pocock
+
+triage: mattpocock/skills/skills/engineering/triage at 4ae2317ddb22
+  MIT License, Copyright (c) 2026 Matt Pocock
+
+unslop: cursor/plugins/pstack/skills/unslop at 6b0300214a09
+  MIT License, Copyright (c) 2026 Lauren Tan

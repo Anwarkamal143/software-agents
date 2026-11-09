@@ -180,7 +180,15 @@
         "required": ["instructions", "tools"],
         "properties": {
           "kind": { "const": "agent" },
-          "instructions": { "type": "string", "minLength": 1 },
+          "instructions": { "type": "string", "minLength": 1, "description": "The Stage contract, as factory:<name>." },
+          "skill": { "type": "string", "minLength": 1, "description": "The main Stage skill, a pinned skill in stage-skills/, run after the Stage contract." },
+          "entry": { "type": "string", "pattern": "^[A-Za-z0-9_-][A-Za-z0-9_./-]*\\.md$", "description": "The Markdown file in the main Stage skill to start from. Default SKILL.md." },
+          "supporting": {
+            "description": "Pinned Stage skills the agent may call in support.",
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 },
+            "uniqueItems": true
+          },
           "tools": { "enum": ["read-only", "write-branch"] },
           "model": { "type": "string", "minLength": 1 },
           "on_fail": { "type": "string" },
@@ -238,14 +246,20 @@
         },
         "policies": { "$ref": "#/definitions/ownerPolicies" },
         "stage_overrides": {
-          "description": "A repo may change only `model` and `instructions` of a library Stage.",
+          "description": "A repo may change only `model` and `instructions` of a library Stage, and switch its Stage skills off; it can never add one.",
           "type": "object",
           "additionalProperties": {
             "type": "object",
             "additionalProperties": false,
             "properties": {
               "model": { "type": "string", "minLength": 1 },
-              "instructions": { "type": "string", "minLength": 1 }
+              "instructions": { "type": "string", "minLength": 1 },
+              "skills_off": {
+                "description": "Stage skills of this Stage, main or supporting, this repo doesn't run.",
+                "type": "array",
+                "items": { "type": "string", "minLength": 1 },
+                "uniqueItems": true
+              }
             }
           }
         },

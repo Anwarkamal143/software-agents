@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "skills": {
+    "blast-radius": {
+      "source": "cursor/plugins",
+      "path": "pstack/skills/blast-radius",
+      "commit": "6b0300214a09fd6029cfb7077043125758cd1fd2",
+      "license": "pstack/LICENSE",
+      "hash": "842dbe2a7ec95dddee35a8d2f35ec1f787e5313f48079944a3c278b3c63f3d5c"
+    },
+    "diagnosing-bugs": {
+      "source": "mattpocock/skills",
+      "path": "skills/engineering/diagnosing-bugs",
+      "commit": "4ae2317ddb22b046e26455e4f9c9b3aaaf62212d",
+      "license": "LICENSE",
+      "hash": "a09631373f4ec905a81223576154c3273deb60caf95419a5db720ea551eb669a"
+    },
+    "ponytail": {
+      "source": "dietrichgebert/ponytail",
+      "path": "skills/ponytail",
+      "commit": "96608e078b2d5ea607c5c3b8b5a54d1c1fba6846",
+      "license": "LICENSE",
+      "hash": "88b9f0fd56c479838aa765a90a927e7016a1be14fcbe267120a80facf80f7312"
+    },
+    "ponytail-review": {
+      "source": "dietrichgebert/ponytail",
+      "path": "skills/ponytail-review",
+      "commit": "96608e078b2d5ea607c5c3b8b5a54d1c1fba6846",
+      "license": "LICENSE",
+      "hash": "1b46c5bba50ed821dc5211ea7dc5ba183767ed88fce992e6fab04a0a463029e5"
+    },
+    "pr-security-review": {
+      "source": "EricTechPro/super-board",
+      "path": "skills/pr-security-review",
+      "commit": "d0b7d5a6850614ca809477c1af43d5d7da408726",
+      "license": "skills/pr-security-review/LICENSE",
+      "hash": "ac449964d214c6125f6e74c56409fe7bf16d3ef9c5701af3730eb14710ac53bb"
+    },
+    "super-build": {
+      "source": "EricTechPro/super-board",
+      "path": "skills/super-build",
+      "commit": "d0b7d5a6850614ca809477c1af43d5d7da408726",
+      "license": "LICENSE",
+      "hash": "1522e0e92c73a0e45d1f6118e631b07358ccaf3add18b3bd93e9e167d7f78a20"
+    },
+    "super-review": {
+      "source": "EricTechPro/super-board",
+      "path": "skills/super-review",
+      "commit": "d0b7d5a6850614ca809477c1af43d5d7da408726",
+      "license": "LICENSE",
+      "hash": "4db6bc37d742b15eaf067e3146f001a56aaebb843ea9f300174cfbb033a2d957"
+    },
+    "tdd": {
+      "source": "mattpocock/skills",
+      "path": "skills/engineering/tdd",
+      "commit": "4ae2317ddb22b046e26455e4f9c9b3aaaf62212d",
+      "license": "LICENSE",
+      "hash": "b2c88cedd3f345c26cb346774861fd9458b69d71e747757ca379356e31affffa"
+    },
+    "triage": {
+      "source": "mattpocock/skills",
+      "path": "skills/engineering/triage",
+      "commit": "4ae2317ddb22b046e26455e4f9c9b3aaaf62212d",
+      "license": "LICENSE",
+      "hash": "c16de4ac5dda364875b90a446159fca60ee1d3cf3c47fd6b72066f9165a5c59d"
+    },
+    "unslop": {
+      "source": "cursor/plugins",
+      "path": "pstack/skills/unslop",
+      "commit": "6b0300214a09fd6029cfb7077043125758cd1fd2",
+      "license": "pstack/LICENSE",
+      "hash": "01db46ad40e5a80d9ea9c4c2d3527b98c2d3d339d0b28fa6c1254514f5e636c5"
+    }
+  }
+}
