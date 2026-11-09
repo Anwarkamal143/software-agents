@@ -91,7 +91,7 @@ describe("the Factory plugin", () => {
 
   test("every starter Stage with a Stage skill has a contract that wins over it and rules out control steps (ADR 0012)", () => {
     const withSkills = Object.entries(STARTER_STAGES).filter(([, s]) => s.kind === "agent" && s.skill);
-    expect(withSkills.map(([id]) => id)).toEqual(expect.arrayContaining(["triage", "build", "review"]));
+    expect(withSkills.map(([id]) => id)).toEqual(["triage", "build", "review", "security"]);
     for (const [id, stage] of withSkills) {
       if (stage.kind !== "agent") continue;
       const contract = stageInstructions(stage.instructions);
