@@ -32,6 +32,8 @@ interface Move {
   from: readonly JobStatus[];
   to: JobStatus;
   reason?: (data: Data) => string | null;
+  /** A paused Job stays paused, for the same reason: the move changes its Stage, not whether it may run. */
+  keepsPause?: boolean;
 }
 
 const LIVE: readonly JobStatus[] = ["queued", "running", "waiting", "paused"];
@@ -50,7 +52,8 @@ const MOVES: Record<string, Move> = {
   "stage-needs-human": { from: ["running"], to: "waiting", reason: () => "question" },
   // A failed Pre-push check ends the Stage run: nothing is pushed and a human decides (ADR 0007).
   "prepush-failed": { from: ["running"], to: "waiting", reason: () => "prepush-failed" },
-  bounced: { from: ["queued"], to: "queued" },
+  // A Stage run that ends while the Factory is paused parks its Job, and its fail Verdict must still Bounce.
+  bounced: { from: ["queued", "paused"], to: "queued", keepsPause: true },
   "human-requested": { from: LIVE, to: "waiting", reason: (d) => text(d.cause) ?? text(d.kind) },
   "human-answered": { from: ["waiting", "paused"], to: "queued" },
   "job-reapproval-needed": { from: LIVE, to: "waiting", reason: () => "reapproval" },
@@ -116,7 +119,7 @@ export class JobProjection {
     if (!job || disallowedMove(job, event)) return;
 
     const move = held(job, event) ? undefined : MOVES[event.type];
-    if (move) {
+    if (move && !(move.keepsPause && job.status === "paused")) {
       const was = job.status;
       job.resumed = move.to === "queued" && (was === "waiting" || was === "paused" || (job.resumed && was === "queued"));
       job.status = move.to;
